@@ -376,14 +376,56 @@ class DelawareScraper:
         """Safely click a tab by text, handling frame detachment issues."""
         for attempt in range(retries):
             try:
-                # Check if frame is still attached
-                if hasattr(frame, '_impl_obj') and frame._impl_obj._is_detached:
-                    return False
+                # Wait for the tab structure to be loaded
+                await frame.wait_for_selector("ul.tabs", timeout=10000)
+                await asyncio.sleep(0.5)
                 
-                # Wait for the tab to be visible and clickable
-                await frame.wait_for_selector(f"text={tab_text}", timeout=10000, state="visible")
-                await frame.click(f"text={tab_text}", timeout=10000)
-                return True
+                # Try multiple selectors based on the HTML structure you provided
+                selectors_to_try = [
+                    f"span.tabs-title:has-text('{tab_text}')",
+                    f"li:has-text('{tab_text}') span.tabs-inner",
+                    f"li:has-text('{tab_text}')",
+                    f"span:has-text('{tab_text}')"
+                ]
+                
+                clicked = False
+                for selector in selectors_to_try:
+                    try:
+                        await frame.wait_for_selector(selector, timeout=5000)
+                        await frame.click(selector, timeout=5000)
+                        clicked = True
+                        break
+                    except:
+                        continue
+                
+                # If regular clicking failed, try JavaScript
+                if not clicked:
+                    try:
+                        clicked = await frame.evaluate(f"""
+                            () => {{
+                                const spans = Array.from(document.querySelectorAll('span.tabs-title'));
+                                const targetSpan = spans.find(span => span.textContent.trim().includes('{tab_text}'));
+                                if (targetSpan) {{
+                                    targetSpan.click();
+                                    return true;
+                                }}
+                                
+                                // Try clicking the parent li element
+                                const lis = Array.from(document.querySelectorAll('li'));
+                                const targetLi = lis.find(li => li.textContent.includes('{tab_text}'));
+                                if (targetLi) {{
+                                    targetLi.click();
+                                    return true;
+                                }}
+                                return false;
+                            }}
+                        """)
+                    except Exception as js_err:
+                        print(f"JavaScript click failed: {js_err}")
+                
+                if clicked:
+                    return True
+                    
             except Exception as e:
                 print(f"Failed to click tab '{tab_text}' attempt {attempt + 1}: {e}")
                 if attempt < retries - 1:
@@ -455,7 +497,7 @@ class DelawareScraper:
                 if await self.safe_click_tab(tabs_frame, "Representatives"):
                     # Wait for representative section to load with multiple possible selectors
                     try:
-                        await asyncio.sleep(2)  # Wait for content to load
+                        await asyncio.sleep(3)  # Wait for content to load
                         # Check if docInfoFrame is still valid and has content
                         await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=10000)
                         
@@ -495,56 +537,89 @@ class DelawareScraper:
     async def extract_representatives(self, docInfoFrame):
         """
         Parse representative name and address under the 'Personal Representative(s):' subsection.
+        Updated to match the exact HTML structure provided.
         """
-        html = await docInfoFrame.content()
-        soup = BeautifulSoup(html, "html.parser")
+        try:
+            html = await docInfoFrame.content()
+            soup = BeautifulSoup(html, "html.parser")
+            reps = []
 
-        reps = []
-
-        # Try to find the representative section by header
-        header = soup.find(lambda tag: tag.name and "representative" in tag.get_text().lower() and tag.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'span'])
-        
-        if not header:
-            # If no header found, try to find by class or ID
-            header = soup.select_one("#PERSONAL_REPRESENTATIVEheader, .subsectionheader")
-
-        if header:
-            # Find the table or container that holds the representative info
-            container = header.find_parent("table") or header.find_next("table")
-            if container:
-                # Look for rows with representative information
-                rows = container.select("tr.evenrow, tr.oddrow")
-                for row in rows:
-                    cells = row.select("td")
-                    if len(cells) >= 2:
-                        name = cells[0].get_text(" ", strip=True)
-                        address = cells[1].get_text(" ", strip=True) if len(cells) > 1 else ""
+            # Look for the Personal Representative header
+            header = soup.select_one("#PERSONAL_REPRESENTATIVEheader")
+            if header:
+                # Find the parent table and then look for the next table that contains the data
+                header_table = header.find_parent("table")
+                if header_table:
+                    # Look for the next table after the header table
+                    next_table = header_table.find_next_sibling("table")
+                    if next_table:
+                        # Look for evenrow/oddrow within nested tables
+                        rows = next_table.select("tr.evenrow, tr.oddrow")
                         
-                        if name and not name.isspace():
-                            reps.append({
-                                "representative_name": " ".join(name.split()),
-                                "representative_address": " ".join(address.split())
-                            })
-        
-        # If no representatives found with the above method, try a more generic approach
-        if not reps:
-            # Look for any table rows that might contain representative info
-            all_rows = soup.select("tr")
-            for row in all_rows:
-                row_text = row.get_text(" ", strip=True).lower()
-                if "representative" in row_text or "executor" in row_text or "administrator" in row_text:
-                    cells = row.select("td")
-                    if len(cells) >= 2:
-                        name = cells[0].get_text(" ", strip=True)
-                        address = cells[1].get_text(" ", strip=True) if len(cells) > 1 else ""
+                        # Based on your HTML structure, name and address are in separate rows
+                        name = ""
+                        address = ""
                         
-                        if name and not name.isspace():
+                        for i, row in enumerate(rows):
+                            cells = row.select("td")
+                            if len(cells) >= 2:
+                                text_content = cells[1].get_text(" ", strip=True)
+                                
+                                # First row with substantial text is usually the name
+                                if i == 0 and text_content and not text_content.isspace():
+                                    name = " ".join(text_content.split())
+                                # Second row with substantial text is usually the address
+                                elif i == 1 and text_content and not text_content.isspace():
+                                    # Clean up address by removing extra whitespace and line breaks
+                                    address = " ".join(text_content.replace("\n", " ").split())
+                        
+                        if name:
                             reps.append({
-                                "representative_name": " ".join(name.split()),
-                                "representative_address": " ".join(address.split())
+                                "representative_name": name,
+                                "representative_address": address
                             })
 
-        return reps
+            # Fallback method: Look for any evenrow/oddrow pattern
+            if not reps:
+                all_rows = soup.select("tr.evenrow, tr.oddrow")
+                current_name = ""
+                current_address = ""
+                
+                for row in all_rows:
+                    cells = row.select("td")
+                    if len(cells) >= 2:
+                        text_content = cells[1].get_text(" ", strip=True)
+                        
+                        # Skip empty content
+                        if not text_content or text_content.isspace():
+                            continue
+                            
+                        # If it looks like a name (no numbers, relatively short)
+                        if not any(char.isdigit() for char in text_content) and len(text_content) < 100:
+                            if current_name:  # Save previous representative if exists
+                                reps.append({
+                                    "representative_name": current_name,
+                                    "representative_address": current_address
+                                })
+                            current_name = " ".join(text_content.split())
+                            current_address = ""
+                        # If it looks like an address (contains numbers or common address words)
+                        elif (any(char.isdigit() for char in text_content) or 
+                              any(word in text_content.upper() for word in ["AVE", "ST", "STREET", "AVENUE", "ROAD", "RD", "LANE", "LN", "DR", "DRIVE", "APT", "SUITE"])):
+                            current_address = " ".join(text_content.replace("\n", " ").split())
+                
+                # Don't forget the last representative
+                if current_name:
+                    reps.append({
+                        "representative_name": current_name,
+                        "representative_address": current_address
+                    })
+
+            return reps
+
+        except Exception as e:
+            print(f"Error extracting representatives: {e}")
+            return []
 
     async def select_tab_decedent(self, bodyframe, timeout_s=30):
         """
@@ -608,7 +683,7 @@ class DelawareScraper:
                 # Click Decedent & Estate Info tab
                 if await self.safe_click_tab(tabs_frame, "Decedent & Estate Info"):
                     try:
-                        await asyncio.sleep(2)  # Wait for content to load
+                        await asyncio.sleep(3)  # Wait for content to load
                         await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=10000)
                         
                         # Try multiple selectors for decedent content
@@ -729,7 +804,8 @@ class DelawareScraper:
                 "filing_date": "",
                 "decedent_address": ""
             }
-
+        
+        
     async def click_back_to_results(self, retries=5):
         """
         Enhanced back to results with better retry logic and waits.
