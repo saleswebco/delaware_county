@@ -590,57 +590,63 @@ class DelawareScraper:
             print(f"Error extracting representatives: {e}")
             return []
 
-    async def select_tab_decedent(self, bodyframe, docInfoFrame, timeout_s=30):
+    async def select_tab_decedent(self, bodyframe, docInfoFrame, timeout_s=45):
         """
-        Robustly click the 'Decedent & Estate Info' tab with improved retry logic.
+        Switch from Representatives tab to 'Decedent & Estate Info' safely.
+        Handles tab frame reloading + adds 3s stability waits everywhere.
         """
-        attempt_deadline = time.time() + timeout_s
+        deadline = time.time() + timeout_s
         last_err = None
-        
-        while time.time() < attempt_deadline:
-            try:
-                # Get tabs frame
-                tabs_frame = await self.get_tabs_frame(docInfoFrame, 10)
-                await tabs_frame.wait_for_load_state("domcontentloaded", timeout=10000)
-                await asyncio.sleep(1)  # Extra stability wait
 
-                # Click Decedent & Estate Info tab
-                if await self.safe_click_tab(tabs_frame, "Decedent & Estate Info"):
+        while time.time() < deadline:
+            try:
+                # Always re-fetch the docInfoFrame (old one may be detached)
+                bodyframe = await self.wait_for_frame_by_name("bodyframe", 20000)
+                documentFrame = await self.wait_for_frame_by_name("documentFrame", 20000, parent_frame=bodyframe)
+                docInfoFrame = await self.wait_for_frame_by_name("docInfoFrame", 20000, parent_frame=documentFrame)
+                await asyncio.sleep(3)
+
+                # Get tab bar frame under docInfoFrame
+                tabs_frame = await self.get_tabs_frame(docInfoFrame, 15)
+                await tabs_frame.wait_for_load_state("domcontentloaded", timeout=15000)
+                await asyncio.sleep(3)
+
+                # Click the "Decedent & Estate Info" tab
+                clicked = await self.safe_click_tab(tabs_frame, "Decedent & Estate Info")
+                if not clicked:
+                    raise PlaywrightTimeoutError("Could not click Decedent & Estate Info tab")
+
+                await asyncio.sleep(3)
+
+                # Wait for decedent info content to show in docInfoFrame
+                selectors_to_try = [
+                    "#fcaddrCORESPONDENT_ADDRESSspan",
+                    "#fccityCORESPONDENT_ADDRESSspan",
+                    "#fcstateCORESPONDENT_ADDRESSspan",
+                    "#fieldFILING_DATEspan"
+                ]
+                content_found = False
+                for sel in selectors_to_try:
                     try:
-                        await asyncio.sleep(3)  # Wait for content to load
-                        await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=10000)
-                        
-                        # Try multiple selectors for decedent content
-                        selectors_to_try = [
-                            "#fcaddrCORESPONDENT_ADDRESSspan",
-                            "#fieldFILING_DATEspan", 
-                            "table.base",
-                            "span.base"
-                        ]
-                        
-                        content_found = False
-                        for selector in selectors_to_try:
-                            try:
-                                await docInfoFrame.wait_for_selector(selector, timeout=5000)
-                                content_found = True
-                                break
-                            except:
-                                continue
-                        
-                        if content_found:
-                            await asyncio.sleep(1)  # Final stability wait
-                            return tabs_frame, docInfoFrame
-                        
-                    except Exception as wait_err:
-                        print(f"Decedent content wait failed: {wait_err}")
+                        await docInfoFrame.wait_for_selector(sel, timeout=5000)
+                        content_found = True
+                        break
+                    except:
                         continue
+
+                if content_found:
+                    await asyncio.sleep(3)
+                    return tabs_frame, docInfoFrame
 
             except Exception as e:
                 last_err = e
                 print(f"Decedent tab selection attempt failed: {e}")
-                await asyncio.sleep(1)
+                await asyncio.sleep(3)
 
-        raise last_err if last_err else PlaywrightTimeoutError("Failed to select Decedent & Estate Info tab within timeout")
+        raise last_err if last_err else PlaywrightTimeoutError(
+            "Failed to select Decedent & Estate Info tab within timeout"
+        )
+
 
     async def extract_decedent_info(self, docInfoFrame):
         """
