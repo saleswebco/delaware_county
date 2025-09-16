@@ -51,12 +51,12 @@ class DelawareScraper:
             await asyncio.sleep(1)
         raise PlaywrightTimeoutError(f"Frame with url fragment '{url_fragment}' not found within {timeout}s")
 
-
-    async def wait_for_frame_by_name(self, name: str, timeout: float = 30000):
-        """Wait for a frame with a specific name to be available."""
+    async def wait_for_frame_by_name(self, name: str, timeout: float = 30000, parent_frame=None):
+        """Wait for a frame with a specific name to be available, optionally within a parent frame."""
         start_time = time.time()
         while (time.time() - start_time) * 1000 < timeout:
-            for frame in self.page.frames:
+            frames = parent_frame.child_frames if parent_frame else self.page.frames
+            for frame in frames:
                 if frame.name == name:
                     return frame
             await asyncio.sleep(0.1)
@@ -433,8 +433,23 @@ class DelawareScraper:
                 continue
         return False
 
+    async def get_tabs_frame(self, docInfoFrame, timeout_s=10):
+        """Get the tabs frame from within the docInfoFrame."""
+        tabs_frame = None
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            for f in docInfoFrame.child_frames:
+                if f.name == "tabs":
+                    tabs_frame = f
+                    break
+            if tabs_frame:
+                break
+            await asyncio.sleep(0.2)
+        if not tabs_frame:
+            tabs_frame = await self.wait_for_frame_by_url_fragment("tabbar.do", timeout_s)
+        return tabs_frame
 
-    async def select_tab_representatives(self, bodyframe, timeout_s=30):
+    async def select_tab_representatives(self, bodyframe, docInfoFrame, timeout_s=30):
         """
         Robustly click the 'Representatives' tab with improved retry logic.
         """
@@ -443,53 +458,8 @@ class DelawareScraper:
         
         while time.time() < attempt_deadline:
             try:
-                # Fresh frame acquisition each attempt
-                bodyframe = await self.wait_for_frame_by_name("bodyframe", timeout=10000)
-                
-                # Find documentFrame
-                documentFrame = None
-                for attempt in range(10):  # 10 attempts with 0.5s each = 5s max wait
-                    for f in bodyframe.child_frames:
-                        if f.name == "documentFrame":
-                            documentFrame = f
-                            break
-                    if documentFrame:
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if not documentFrame:
-                    documentFrame = await self.wait_for_frame_by_url_fragment("DocumentInfoView.jsp", 10)
-
-                # Find docInfoFrame
-                docInfoFrame = None
-                for attempt in range(10):
-                    for f in documentFrame.child_frames:
-                        if f.name == "docInfoFrame":
-                            docInfoFrame = f
-                            break
-                    if docInfoFrame:
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if not docInfoFrame:
-                    docInfoFrame = await self.wait_for_frame_by_url_fragment("transAddDocCaseFile.do", 10)
-
-                await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=15000)
-                
-                # Find tabs frame
-                tabs_frame = None
-                for attempt in range(10):
-                    for f in docInfoFrame.child_frames:
-                        if f.name == "tabs":
-                            tabs_frame = f
-                            break
-                    if tabs_frame:
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if not tabs_frame:
-                    tabs_frame = await self.wait_for_frame_by_url_fragment("tabbar.do", 10)
-
+                # Get tabs frame
+                tabs_frame = await self.get_tabs_frame(docInfoFrame, 10)
                 await tabs_frame.wait_for_load_state("domcontentloaded", timeout=10000)
                 await asyncio.sleep(1)  # Extra stability wait
 
@@ -532,7 +502,6 @@ class DelawareScraper:
                 await asyncio.sleep(1)
 
         raise last_err if last_err else PlaywrightTimeoutError("Failed to select Representatives tab within timeout")
-
 
     async def extract_representatives(self, docInfoFrame):
         """
@@ -621,7 +590,7 @@ class DelawareScraper:
             print(f"Error extracting representatives: {e}")
             return []
 
-    async def select_tab_decedent(self, bodyframe, timeout_s=30):
+    async def select_tab_decedent(self, bodyframe, docInfoFrame, timeout_s=30):
         """
         Robustly click the 'Decedent & Estate Info' tab with improved retry logic.
         """
@@ -630,53 +599,8 @@ class DelawareScraper:
         
         while time.time() < attempt_deadline:
             try:
-                # Fresh frame acquisition each attempt
-                bodyframe = await self.wait_for_frame_by_name("bodyframe", timeout=10000)
-                
-                # Find documentFrame
-                documentFrame = None
-                for attempt in range(10):
-                    for f in bodyframe.child_frames:
-                        if f.name == "documentFrame":
-                            documentFrame = f
-                            break
-                    if documentFrame:
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if not documentFrame:
-                    documentFrame = await self.wait_for_frame_by_url_fragment("DocumentInfoView.jsp", 10)
-
-                # Find docInfoFrame
-                docInfoFrame = None
-                for attempt in range(10):
-                    for f in documentFrame.child_frames:
-                        if f.name == "docInfoFrame":
-                            docInfoFrame = f
-                            break
-                    if docInfoFrame:
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if not docInfoFrame:
-                    docInfoFrame = await self.wait_for_frame_by_url_fragment("transAddDocCaseFile.do", 10)
-
-                await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=15000)
-                
-                # Find tabs frame
-                tabs_frame = None
-                for attempt in range(10):
-                    for f in docInfoFrame.child_frames:
-                        if f.name == "tabs":
-                            tabs_frame = f
-                            break
-                    if tabs_frame:
-                        break
-                    await asyncio.sleep(0.5)
-                
-                if not tabs_frame:
-                    tabs_frame = await self.wait_for_frame_by_url_fragment("tabbar.do", 10)
-
+                # Get tabs frame
+                tabs_frame = await self.get_tabs_frame(docInfoFrame, 10)
                 await tabs_frame.wait_for_load_state("domcontentloaded", timeout=10000)
                 await asyncio.sleep(1)  # Extra stability wait
 
@@ -805,7 +729,6 @@ class DelawareScraper:
                 "decedent_address": ""
             }
         
-        
     async def click_back_to_results(self, retries=5):
         """
         Enhanced back to results with better retry logic and waits.
@@ -913,7 +836,6 @@ class DelawareScraper:
         
         print("Failed to return to results after all attempts")
         return False
-
 
     async def click_next_results_page(self):
         """
@@ -1024,7 +946,7 @@ class DelawareScraper:
                 # Representatives
                 reps = []
                 try:
-                    await self.select_tab_representatives(bodyframe, 20)
+                    await self.select_tab_representatives(bodyframe, docInfoFrame, 20)
                     reps = await self.extract_representatives(docInfoFrame)
                 except Exception as e:
                     print(f"Failed to extract representatives for record {row_idx}: {e}")
@@ -1032,7 +954,7 @@ class DelawareScraper:
                 # Decedent & Estate Info
                 dec_info = {"filing_date": "", "decedent_address": ""}
                 try:
-                    await self.select_tab_decedent(bodyframe, 20)
+                    await self.select_tab_decedent(bodyframe, docInfoFrame, 20)
                     dec_info = await self.extract_decedent_info(docInfoFrame)
                 except Exception as e:
                     print(f"Failed to extract decedent info for record {row_idx}: {e}")
