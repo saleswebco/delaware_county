@@ -1,3 +1,4 @@
+
 # scrape_delaware.py
 import asyncio
 import json
@@ -449,209 +450,10 @@ class DelawareScraper:
             tabs_frame = await self.wait_for_frame_by_url_fragment("tabbar.do", timeout_s)
         return tabs_frame
 
-    async def select_tab_representatives(self, bodyframe, docInfoFrame, timeout_s=30):
+    async def extract_decedent_info_from_docinfo(self, docInfoFrame):
         """
-        Robustly click the 'Representatives' tab with improved retry logic.
-        """
-        attempt_deadline = time.time() + timeout_s
-        last_err = None
-        
-        while time.time() < attempt_deadline:
-            try:
-                # Get tabs frame
-                tabs_frame = await self.get_tabs_frame(docInfoFrame, 10)
-                await tabs_frame.wait_for_load_state("domcontentloaded", timeout=10000)
-                await asyncio.sleep(1)  # Extra stability wait
-
-                # Click the Representatives tab
-                if await self.safe_click_tab(tabs_frame, "Representatives"):
-                    # Wait for representative section to load with multiple possible selectors
-                    try:
-                        await asyncio.sleep(3)  # Wait for content to load
-                        # Check if docInfoFrame is still valid and has content
-                        await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=10000)
-                        
-                        # Try multiple selectors for representative content
-                        selectors_to_try = [
-                            "#PERSONAL_REPRESENTATIVEheader",
-                            "span.subsectionheader",
-                            "table.base",
-                            "tr.evenrow, tr.oddrow"
-                        ]
-                        
-                        content_found = False
-                        for selector in selectors_to_try:
-                            try:
-                                await docInfoFrame.wait_for_selector(selector, timeout=5000)
-                                content_found = True
-                                break
-                            except:
-                                continue
-                        
-                        if content_found:
-                            await asyncio.sleep(1)  # Final stability wait
-                            return tabs_frame, docInfoFrame
-                        
-                    except Exception as wait_err:
-                        print(f"Content wait failed: {wait_err}")
-                        continue
-
-            except Exception as e:
-                last_err = e
-                print(f"Tab selection attempt failed: {e}")
-                await asyncio.sleep(1)
-
-        raise last_err if last_err else PlaywrightTimeoutError("Failed to select Representatives tab within timeout")
-
-    async def extract_representatives(self, docInfoFrame):
-        """
-        Parse representative name and address under the 'Personal Representative(s):' subsection.
-        Updated to match the exact HTML structure provided.
-        """
-        try:
-            html = await docInfoFrame.content()
-            soup = BeautifulSoup(html, "html.parser")
-            reps = []
-
-            # Look for the Personal Representative header
-            header = soup.select_one("#PERSONAL_REPRESENTATIVEheader")
-            if header:
-                # Find the parent table and then look for the next table that contains the data
-                header_table = header.find_parent("table")
-                if header_table:
-                    # Look for the next table after the header table
-                    next_table = header_table.find_next_sibling("table")
-                    if next_table:
-                        # Look for evenrow/oddrow within nested tables
-                        rows = next_table.select("tr.evenrow, tr.oddrow")
-                        
-                        # Based on your HTML structure, name and address are in separate rows
-                        name = ""
-                        address = ""
-                        
-                        for i, row in enumerate(rows):
-                            cells = row.select("td")
-                            if len(cells) >= 2:
-                                text_content = cells[1].get_text(" ", strip=True)
-                                
-                                # First row with substantial text is usually the name
-                                if i == 0 and text_content and not text_content.isspace():
-                                    name = " ".join(text_content.split())
-                                # Second row with substantial text is usually the address
-                                elif i == 1 and text_content and not text_content.isspace():
-                                    # Clean up address by removing extra whitespace and line breaks
-                                    address = " ".join(text_content.replace("\n", " ").split())
-                        
-                        if name:
-                            reps.append({
-                                "representative_name": name,
-                                "representative_address": address
-                            })
-
-            # Fallback method: Look for any evenrow/oddrow pattern
-            if not reps:
-                all_rows = soup.select("tr.evenrow, tr.oddrow")
-                current_name = ""
-                current_address = ""
-                
-                for row in all_rows:
-                    cells = row.select("td")
-                    if len(cells) >= 2:
-                        text_content = cells[1].get_text(" ", strip=True)
-                        
-                        # Skip empty content
-                        if not text_content or text_content.isspace():
-                            continue
-                            
-                        # If it looks like a name (no numbers, relatively short)
-                        if not any(char.isdigit() for char in text_content) and len(text_content) < 100:
-                            if current_name:  # Save previous representative if exists
-                                reps.append({
-                                    "representative_name": current_name,
-                                    "representative_address": current_address
-                                })
-                            current_name = " ".join(text_content.split())
-                            current_address = ""
-                        # If it looks like an address (contains numbers or common address words)
-                        elif (any(char.isdigit() for char in text_content) or 
-                              any(word in text_content.upper() for word in ["AVE", "ST", "STREET", "AVENUE", "ROAD", "RD", "LANE", "LN", "DR", "DRIVE", "APT", "SUITE"])):
-                            current_address = " ".join(text_content.replace("\n", " ").split())
-                
-                # Don't forget the last representative
-                if current_name:
-                    reps.append({
-                        "representative_name": current_name,
-                        "representative_address": current_address
-                    })
-
-            return reps
-
-        except Exception as e:
-            print(f"Error extracting representatives: {e}")
-            return []
-
-    async def select_tab_decedent(self, bodyframe, docInfoFrame, timeout_s=45):
-        """
-        Switch from Representatives tab to 'Decedent & Estate Info' safely.
-        Handles tab frame reloading + adds 3s stability waits everywhere.
-        """
-        deadline = time.time() + timeout_s
-        last_err = None
-
-        while time.time() < deadline:
-            try:
-                # Always re-fetch the docInfoFrame (old one may be detached)
-                bodyframe = await self.wait_for_frame_by_name("bodyframe", 20000)
-                documentFrame = await self.wait_for_frame_by_name("documentFrame", 20000, parent_frame=bodyframe)
-                docInfoFrame = await self.wait_for_frame_by_name("docInfoFrame", 20000, parent_frame=documentFrame)
-                await asyncio.sleep(3)
-
-                # Get tab bar frame under docInfoFrame
-                tabs_frame = await self.get_tabs_frame(docInfoFrame, 15)
-                await tabs_frame.wait_for_load_state("domcontentloaded", timeout=15000)
-                await asyncio.sleep(3)
-
-                # Click the "Decedent & Estate Info" tab
-                clicked = await self.safe_click_tab(tabs_frame, "Decedent & Estate Info")
-                if not clicked:
-                    raise PlaywrightTimeoutError("Could not click Decedent & Estate Info tab")
-
-                await asyncio.sleep(3)
-
-                # Wait for decedent info content to show in docInfoFrame
-                selectors_to_try = [
-                    "#fcaddrCORESPONDENT_ADDRESSspan",
-                    "#fccityCORESPONDENT_ADDRESSspan",
-                    "#fcstateCORESPONDENT_ADDRESSspan",
-                    "#fieldFILING_DATEspan"
-                ]
-                content_found = False
-                for sel in selectors_to_try:
-                    try:
-                        await docInfoFrame.wait_for_selector(sel, timeout=5000)
-                        content_found = True
-                        break
-                    except:
-                        continue
-
-                if content_found:
-                    await asyncio.sleep(3)
-                    return tabs_frame, docInfoFrame
-
-            except Exception as e:
-                last_err = e
-                print(f"Decedent tab selection attempt failed: {e}")
-                await asyncio.sleep(3)
-
-        raise last_err if last_err else PlaywrightTimeoutError(
-            "Failed to select Decedent & Estate Info tab within timeout"
-        )
-
-
-    async def extract_decedent_info(self, docInfoFrame):
-        """
-        Extract Filing Date and decedent address fields from Decedent & Estate Info.
-        Improved to handle the exact HTML structure you provided.
+        Extract Filing Date and decedent address fields from Decedent & Estate Info tab.
+        This is the main function that extracts the data you need.
         """
         try:
             html = await docInfoFrame.content()
@@ -660,26 +462,18 @@ class DelawareScraper:
             filing_date = ""
             decedent_address = ""
 
-            # Look for Filing Date - try multiple possible field IDs
-            filing_date_selectors = [
-                "#fieldFILING_DATEspan",
-                "#fieldFILING_DATE", 
-                "span[id*='FILING_DATE']"
-            ]
-            
-            for selector in filing_date_selectors:
-                element = soup.select_one(selector)
-                if element:
-                    # Get the parent row and find the value cell
-                    row = element.find_parent("tr")
-                    if row:
-                        cells = row.find_all("td")
-                        if len(cells) >= 3:
-                            filing_date = cells[2].get_text(" ", strip=True)
-                            break
+            # Extract Filing Date
+            filing_date_span = soup.select_one("#fieldFILING_DATEspan")
+            if filing_date_span:
+                # Find the parent row and then the value cell
+                row = filing_date_span.find_parent("tr")
+                if row:
+                    cells = row.find_all("td")
+                    if len(cells) >= 3:
+                        filing_date = cells[2].get_text(" ", strip=True)
 
-            # Extract address components using the exact IDs from your HTML
-            addr_components = {}
+            # Extract address components
+            address_parts = {}
             
             # Address
             addr_span = soup.select_one("#fcaddrCORESPONDENT_ADDRESSspan")
@@ -688,7 +482,7 @@ class DelawareScraper:
                 if row:
                     cells = row.find_all("td")
                     if len(cells) >= 3:
-                        addr_components['address'] = cells[2].get_text(" ", strip=True)
+                        address_parts['address'] = cells[2].get_text(" ", strip=True)
 
             # City
             city_span = soup.select_one("#fccityCORESPONDENT_ADDRESSspan")
@@ -697,31 +491,29 @@ class DelawareScraper:
                 if row:
                     cells = row.find_all("td")
                     if len(cells) >= 3:
-                        addr_components['city'] = cells[2].get_text(" ", strip=True)
+                        address_parts['city'] = cells[2].get_text(" ", strip=True)
 
-            # State and Zip (they're in the same row based on your HTML)
+            # State and Zip
             state_span = soup.select_one("#fcstateCORESPONDENT_ADDRESSspan")
             if state_span:
                 row = state_span.find_parent("tr")
                 if row:
-                    # State is in a nested table structure
+                    # Look for the nested table that contains state and zip
                     nested_table = row.select_one("table.base")
                     if nested_table:
-                        nested_row = nested_table.select_one("tr")
-                        if nested_row:
-                            nested_cells = nested_row.find_all("td")
-                            if len(nested_cells) >= 1:
-                                addr_components['state'] = nested_cells[0].get_text(" ", strip=True)
-                            if len(nested_cells) >= 3:
-                                addr_components['zip'] = nested_cells[2].get_text(" ", strip=True)
+                        nested_cells = nested_table.select("td")
+                        if len(nested_cells) >= 1:
+                            address_parts['state'] = nested_cells[0].get_text(" ", strip=True)
+                        if len(nested_cells) >= 3:
+                            address_parts['zip'] = nested_cells[2].get_text(" ", strip=True)
 
             # Combine address components
-            address_parts = []
-            for key in ['address', 'city', 'state', 'zip']:
-                if key in addr_components and addr_components[key]:
-                    address_parts.append(addr_components[key])
+            address_components = []
+            for part in ['address', 'city', 'state', 'zip']:
+                if part in address_parts and address_parts[part]:
+                    address_components.append(address_parts[part])
             
-            decedent_address = ", ".join(address_parts) if address_parts else ""
+            decedent_address = ", ".join(address_components) if address_components else ""
 
             return {
                 "filing_date": filing_date,
@@ -734,7 +526,64 @@ class DelawareScraper:
                 "filing_date": "",
                 "decedent_address": ""
             }
-        
+
+    async def extract_representatives_from_docinfo(self, docInfoFrame):
+        """
+        Parse representative name and address under the 'Personal Representative(s):' subsection.
+        """
+        try:
+            html = await docInfoFrame.content()
+            soup = BeautifulSoup(html, "html.parser")
+            reps = []
+
+            # Look for representative rows
+            rows = soup.select("tr.evenrow, tr.oddrow")
+            
+            current_rep = {"name": "", "address": ""}
+            
+            for row in rows:
+                cells = row.select("td")
+                if len(cells) >= 2:
+                    text_content = cells[1].get_text(" ", strip=True)
+                    
+                    # Skip empty content
+                    if not text_content or text_content.isspace():
+                        continue
+                    
+                    # If this looks like a name (no digits, relatively short)
+                    if not any(char.isdigit() for char in text_content) and len(text_content) < 100:
+                        # If we already have a representative, save it
+                        if current_rep["name"]:
+                            reps.append({
+                                "representative_name": current_rep["name"],
+                                "representative_address": current_rep["address"]
+                            })
+                            current_rep = {"name": "", "address": ""}
+                        
+                        current_rep["name"] = text_content
+                    
+                    # If this looks like an address (contains digits or address keywords)
+                    elif (any(char.isdigit() for char in text_content) or 
+                          any(keyword in text_content.upper() for keyword in 
+                              ["AVE", "ST", "STREET", "AVENUE", "ROAD", "RD", "LANE", "LN", "DR", "DRIVE", "APT", "SUITE"])):
+                        if current_rep["address"]:
+                            current_rep["address"] += " " + text_content
+                        else:
+                            current_rep["address"] = text_content
+            
+            # Don't forget the last representative
+            if current_rep["name"]:
+                reps.append({
+                    "representative_name": current_rep["name"],
+                    "representative_address": current_rep["address"]
+                })
+
+            return reps
+
+        except Exception as e:
+            print(f"Error extracting representatives: {e}")
+            return []
+
     async def click_back_to_results(self, retries=5):
         """
         Enhanced back to results with better retry logic and waits.
@@ -907,6 +756,85 @@ class DelawareScraper:
         await asyncio.sleep(1.0)
         return bool(had_next)
 
+    async def process_single_record(self, resultListFrame, row_idx):
+        """
+        Process a single record: click it, extract data, and return to results.
+        This version always refreshes frame references to avoid 'Frame was detached'.
+        """
+        # Click the row link
+        ok = await self.click_result_link_by_index(resultListFrame, row_idx)
+        if not ok:
+            print(f"Skipping row {row_idx}: link not found")
+            return None
+
+        # Wait for details to load, always get fresh frame refs
+        try:
+            bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(30)
+            await asyncio.sleep(2)  # give the DOM time to settle
+        except Exception as e:
+            print(f"Failed to load details for record {row_idx}: {e}")
+            return None
+
+        # --- Extract decedent info (fresh frame) ---
+        dec_info = {}
+        try:
+            bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(10)
+            dec_info = await self.extract_decedent_info_from_docinfo(docInfoFrame)
+        except Exception as e:
+            print(f"Error extracting decedent info for record {row_idx}: {e}")
+            dec_info = {"filing_date": "", "decedent_address": ""}
+
+        # --- Representatives tab ---
+        reps = []
+        try:
+            # ensure fresh docInfoFrame before using
+            bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(10)
+            tabs_frame = await self.get_tabs_frame(docInfoFrame, 10)
+            await tabs_frame.wait_for_load_state("domcontentloaded", timeout=10000)
+            await asyncio.sleep(1)
+
+            if await self.safe_click_tab(tabs_frame, "Representatives"):
+                await asyncio.sleep(3)  # wait for panel to refresh
+                # get fresh frame again after tab change
+                bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(10)
+                reps = await self.extract_representatives_from_docinfo(docInfoFrame)
+        except Exception as e:
+            print(f"Failed to extract representatives for record {row_idx}: {e}")
+
+        # --- Case metadata ---
+        case_meta = {}
+        try:
+            for f in self.page.frames:
+                if f.url and "DocumentInfoView.jsp" in f.url and "caseFileId=" in f.url:
+                    qs = parse_qs(urlparse(f.url).query)
+                    case_meta = {
+                        "caseFileId": (qs.get("caseFileId") or [""])[0],
+                        "caseFileNum": (qs.get("caseFileNum") or [""])[0],
+                    }
+                    break
+        except Exception:
+            pass
+
+        base_record = {
+            "filing_date": dec_info.get("filing_date"),
+            "decedent_address": dec_info.get("decedent_address"),
+            **case_meta
+        }
+
+        # --- Return to results ---
+        try:
+            await self.click_back_to_results()
+            await asyncio.sleep(2)
+        except Exception as e:
+            print(f"Failed to go back to results after record {row_idx}: {e}")
+            return None
+
+        # --- Normalize output ---
+        if reps:
+            return [{**base_record, **rep} for rep in reps]
+        else:
+            return [{**base_record, "representative_name": "", "representative_address": ""}]
+
     async def deep_scrape_all_results(self):
         """
         Iterate all result pages, open each record, extract reps and decedent info,
@@ -931,86 +859,15 @@ class DelawareScraper:
             for row_idx in range(num_rows):
                 print(f"Processing record {row_idx + 1} of {num_rows} on page {page_index}")
                 
-                # Click the row link
-                ok = await self.click_result_link_by_index(resultListFrame, row_idx)
-                if not ok:
-                    print(f"Skipping row {row_idx}: link not found")
-                    continue
-
-                # Wait details
-                try:
-                    bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(30)
-                except Exception as e:
-                    print(f"Failed to load details for record {row_idx}: {e}")
-                    # Try to go back to results
-                    try:
-                        await self.click_back_to_results()
-                    except:
-                        pass
-                    continue
-
-                # Representatives
-                reps = []
-                try:
-                    await self.select_tab_representatives(bodyframe, docInfoFrame, 20)
-                    reps = await self.extract_representatives(docInfoFrame)
-                except Exception as e:
-                    print(f"Failed to extract representatives for record {row_idx}: {e}")
-
-                # Decedent & Estate Info
-                dec_info = {"filing_date": "", "decedent_address": ""}
-                try:
-                    await self.select_tab_decedent(bodyframe, docInfoFrame, 20)
-                    dec_info = await self.extract_decedent_info(docInfoFrame)
-                except Exception as e:
-                    print(f"Failed to extract decedent info for record {row_idx}: {e}")
-
-                # Also try to capture case identifiers from the DocumentInfoView URL
-                case_meta = {}
-                try:
-                    for f in self.page.frames:
-                        if f.url and "DocumentInfoView.jsp" in f.url and "caseFileId=" in f.url:
-                            qs = parse_qs(urlparse(f.url).query)
-                            case_meta = {
-                                "caseFileId": (qs.get("caseFileId") or [""])[0],
-                                "caseFileNum": (qs.get("caseFileNum") or [""])[0],
-                            }
-                            break
-                except Exception:
-                    pass
-
-                base_record = {
-                    "filing_date": dec_info.get("filing_date"),
-                    "decedent_address": dec_info.get("decedent_address"),
-                    **case_meta
-                }
-
-                if reps:
-                    for r in reps:
-                        rec = {**base_record, **r}
-                        all_records.append(rec)
+                record_data = await self.process_single_record(resultListFrame, row_idx)
+                if record_data:
+                    all_records.extend(record_data)
+                    print(f"✅ Successfully processed record {row_idx + 1}")
                 else:
-                    all_records.append({**base_record, "representative_name": "", "representative_address": ""})
+                    print(f"❌ Failed to process record {row_idx + 1}")
 
-                # Back to results
-                try:
-                    await self.click_back_to_results()
-                except Exception as e:
-                    print(f"Failed to go back to results: {e}")
-                    # If we can't go back, we might need to restart the search
-                    break
-
-                # Wait for results list again before next iteration
-                try:
-                    resultListFrame, _ = await self.collect_result_row_links()
-                except Exception:
-                    # Try a brief wait and retry
-                    await asyncio.sleep(1.0)
-                    try:
-                        resultListFrame, _ = await self.collect_result_row_links()
-                    except:
-                        print("Could not return to results list after processing record")
-                        break
+                # Wait a moment before processing next record
+                await asyncio.sleep(1)
 
             # Try next page
             has_next = await self.click_next_results_page()
@@ -1019,7 +876,7 @@ class DelawareScraper:
                 break
 
             # Wait for next results list to load
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(2)
             page_index += 1
 
         return all_records
