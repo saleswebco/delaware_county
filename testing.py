@@ -1,4 +1,3 @@
-
 # scrape_delaware.py
 import asyncio
 import json
@@ -27,8 +26,56 @@ class DelawareScraper:
         self.context = context
         self.base_url = base_url
 
+    # === ADD THESE FRAME LOCATOR METHODS FROM WORKING CODE ===
+    def _res_list_loc(self):
+        # bodyframe -> resultFrame -> resultListFrame
+        return (
+            self.page
+            .frame_locator("iframe[name='bodyframe']")
+            .frame_locator("iframe[name='resultFrame']")
+            .frame_locator("iframe[name='resultListFrame']")
+        )
+
+    def _res_subnav_middle_loc(self):
+        # middle subnav with pageNumber input and Go button
+        return (
+            self.page
+            .frame_locator("iframe[name='bodyframe']")
+            .frame_locator("iframe[name='resultFrame']")
+            .frame_locator("iframe[src*='navbar.do?page=search.resultNav.middle']")
+        )
+
+    def _doc_loc(self):
+        # bodyframe -> documentFrame -> docInfoFrame
+        return (
+            self.page
+            .frame_locator("iframe[name='bodyframe']")
+            .frame_locator("iframe[name='documentFrame']")
+            .frame_locator("iframe[name='docInfoFrame']")
+        )
+
+    def _tabs_loc(self):
+        return self._doc_loc().frame_locator("iframe[name='tabs']")
+
+    async def ensure_decedent_tab(self):
+        """Ensure the decedent panel is visible."""
+        try:
+            if await self._doc_loc().locator("text=Estate Info").first.is_visible():
+                return
+        except:
+            pass
+        
+        tabs = self._tabs_loc()
+        for label in ["Decedent & Estate Info", "Decedent", "Estate Info"]:
+            try:
+                await tabs.locator(f"span.tabs-title:has-text('{label}')").first.click(timeout=2000)
+                await asyncio.sleep(0.6)
+                return
+            except:
+                continue
+
     async def _dump_debug(self, name_prefix: str):
-        """Save HTML for debugging (removed screenshot to avoid PNG files)."""
+        """Save HTML for debugging."""
         ts = datetime.now().strftime("%Y%m%dT%H%M%SZ")
         html = OUT_DIR / f"{name_prefix}-{ts}.html"
         try:
@@ -52,28 +99,15 @@ class DelawareScraper:
             await asyncio.sleep(1)
         raise PlaywrightTimeoutError(f"Frame with url fragment '{url_fragment}' not found within {timeout}s")
 
-    async def wait_for_frame_by_name(self, name: str, timeout: float = 30000, parent_frame=None):
-        """Wait for a frame with a specific name to be available, optionally within a parent frame."""
-        start_time = time.time()
-        while (time.time() - start_time) * 1000 < timeout:
-            frames = parent_frame.child_frames if parent_frame else self.page.frames
-            for frame in frames:
-                if frame.name == name:
-                    return frame
-            await asyncio.sleep(0.1)
-        raise PlaywrightTimeoutError(f"Frame with name '{name}' not found within {timeout}ms")
-
     # -----------------------
-    # Login / navigation
+    # Login / navigation (KEEP YOUR EXISTING METHODS)
     # -----------------------
     async def goto_login(self, retries: int = 3):
         """Go to login page and click 'Login as Guest'."""
         for attempt in range(1, retries + 1):
             try:
                 await self.page.goto(self.base_url, timeout=60000)
-                # small wait for initial rendering
                 await self.page.wait_for_timeout(1500)
-                # Try robust selector variations
                 possible_selectors = [
                     "input[value=' Login as Guest ']",
                     "input[value='Login as Guest']",
@@ -91,7 +125,6 @@ class DelawareScraper:
                         continue
                 if not clicked:
                     raise PlaywrightTimeoutError("Could not find 'Login as Guest' button with known selectors")
-                # wait for the expected post-login url pattern
                 await self.page.wait_for_url("**/main.jsp?countyname=DelawarePA", timeout=60000)
                 print("✅ Logged in as Guest")
                 return
@@ -102,17 +135,11 @@ class DelawareScraper:
                     raise
                 await asyncio.sleep(3)
 
-    # -----------------------
-    # Accept terms (iframe)
-    # -----------------------
     async def accept_terms(self, retries: int = 3):
         """Handle iframe and click Accept button using frame_locator."""
         for attempt in range(1, retries + 1):
             try:
-                # Wait for iframe wrapper presence (name might differ)
                 await asyncio.sleep(1)
-                # Use frame_locator to target the inner iframe's accept button.
-                # Try several iframe selectors to be robust.
                 iframe_selectors = [
                     "iframe[name='bodyframe']",
                     "iframe#bodyframe",
@@ -132,7 +159,6 @@ class DelawareScraper:
                         continue
 
                 if not clicked:
-                    # As a fallback: iterate frames and try to find an '#accept' element inside any frame
                     for f in self.page.frames:
                         try:
                             handle = await f.query_selector("#accept")
@@ -159,18 +185,11 @@ class DelawareScraper:
                     raise
                 await asyncio.sleep(2)
 
-    # -----------------------
-    # Click Search Public Records row
-    # -----------------------
     async def click_search_public_records(self, retries: int = 3):
-        """
-        Click the row that triggers Search Public Records.
-        Uses iframe frame_locator and robust waiting.
-        """
+        """Click the row that triggers Search Public Records."""
         for attempt in range(1, retries + 1):
             try:
                 await self.page.wait_for_timeout(1000)
-                # The UI might place the table inside the same 'bodyframe' iframe
                 frame_locator = self.page.frame_locator("iframe[name='bodyframe']")
                 selector = "#datagrid-row-r1-2-0"
                 await frame_locator.locator(selector).wait_for(state="visible", timeout=20000)
@@ -182,15 +201,11 @@ class DelawareScraper:
                 if attempt == retries:
                     await self._dump_debug("click_search_public_records_failed")
                     raise
-                # log frame URLs for debugging
                 print("Frames at failure:")
                 for f in self.page.frames:
                     print(" →", f.url)
                 await asyncio.sleep(2)
 
-    # -----------------------
-    # Enter filing dates inside dynamic criteria frame
-    # -----------------------
     async def enter_filing_dates(self, from_date: str = "01/01/2025", to_date: str = None, retries: int = 3):
         """Fill Filing Date From/To in the dynamically-loaded criteriaframe."""
         if to_date is None:
@@ -201,12 +216,10 @@ class DelawareScraper:
 
         for attempt in range(1, retries + 1):
             try:
-                # Look for a frame whose URL contains 'dynCriteria.do'
                 criteria_frame = None
                 try:
                     criteria_frame = await self.wait_for_frame_by_url_fragment("dynCriteria.do", timeout=30)
                 except PlaywrightTimeoutError:
-                    # fallback: try blank.jsp or other known fragments
                     try:
                         criteria_frame = await self.wait_for_frame_by_url_fragment("blank.jsp", timeout=10)
                     except PlaywrightTimeoutError:
@@ -215,20 +228,16 @@ class DelawareScraper:
                 if not criteria_frame:
                     raise PlaywrightTimeoutError("Could not find criteria frame (dynCriteria.do or blank.jsp)")
 
-                # ensure frame is loaded
                 await criteria_frame.wait_for_load_state("domcontentloaded", timeout=15000)
                 await asyncio.sleep(1)
 
-                # Wait for date container
                 el = await criteria_frame.wait_for_selector("#elemDateRange", timeout=15000)
                 if not el:
                     raise PlaywrightTimeoutError("Date range container '#elemDateRange' not found")
 
-                # locate FROM/TO inputs (IDs observed from your code)
                 from_input = await criteria_frame.wait_for_selector("#_easyui_textbox_input7", timeout=10000)
                 to_input = await criteria_frame.wait_for_selector("#_easyui_textbox_input8", timeout=10000)
 
-                # Clear & type (use .fill where possible)
                 await from_input.fill("")
                 await from_input.type(from_date)
                 print(f"✅ Entered FROM date: {from_date}")
@@ -249,32 +258,18 @@ class DelawareScraper:
                     raise
                 await asyncio.sleep(2)
 
-    # -----------------------
-    # Click Search button inside dynamic search frame
-    # -----------------------
     async def click_search_button(self, retries: int = 3):
-        """Click the 'Search Public Records' button by navigating through the iframe hierarchy."""
+        """Click the 'Search Public Records' button."""
         for attempt in range(1, retries + 1):
             try:
-                # First, wait for the main body frame
                 body_frame = await self.wait_for_frame_by_name("bodyframe", timeout=30000)
-                
-                # Wait for the dynamic search frame inside the body frame
-                dyn_search_frame = await self.wait_for_frame_by_name("dynSearchFrame", timeout=30000)
-                
-                # Wait for the frame to load the search criteria content
+                dyn_search_frame = await self.wait_for_frame_by_name("dynSearchFrame", timeout=30000, parent_frame=body_frame)
                 await dyn_search_frame.wait_for_load_state("domcontentloaded", timeout=15000)
-                
-                # Wait for the search button to be available
                 search_selector = "a[onclick*='executeSearchCommand'][onclick*='search']"
                 await dyn_search_frame.wait_for_selector(search_selector, timeout=15000)
-                
-                # Click using JavaScript to ensure it works
                 await dyn_search_frame.eval_on_selector(search_selector, "el => el.click()")
-                
                 print("✅ Clicked 'Search Public Records' button")
                 return True
-                
             except Exception as e:
                 print(f"⚠ click_search_button attempt {attempt} failed: {e}")
                 if attempt == retries:
@@ -283,381 +278,236 @@ class DelawareScraper:
                     return False
                 await asyncio.sleep(2)
 
-    # -----------------------
-    # Result processing methods
-    # -----------------------
-    async def collect_result_row_links(self):
-        """
-        From the results page frame stack:
-        bodyframe -> resultFrame -> resultListFrame
-        Find the clickable links for each record (the anchor after the checkbox).
-        Returns a list of element handles or click actions (we'll click via eval to avoid navigation race).
-        """
-        bodyframe = await self.wait_for_frame_by_name("bodyframe", 30000)
-        resultFrame = None
-        # resultFrame may be nested in resultsContent; name is 'resultFrame'
-        for f in bodyframe.child_frames:
-            if f.name == "resultFrame":
-                resultFrame = f
-                break
-        if not resultFrame:
-            # Fallback by URL fragment
-            resultFrame = await self.wait_for_frame_by_url_fragment("SearchResultsView.jsp", 30)
+    async def wait_for_frame_by_name(self, name: str, timeout: float = 30000, parent_frame=None):
+        """Wait for a frame with a specific name to be available."""
+        start_time = time.time()
+        while (time.time() - start_time) * 1000 < timeout:
+            frames = parent_frame.child_frames if parent_frame else self.page.frames
+            for frame in frames:
+                if frame.name == name:
+                    return frame
+            await asyncio.sleep(0.1)
+        raise PlaywrightTimeoutError(f"Frame with name '{name}' not found within {timeout}ms")
 
-        # Inside resultFrame there is resultListFrame
-        resultListFrame = None
-        for f in resultFrame.child_frames:
-            if f.name == "resultListFrame":
-                resultListFrame = f
-                break
-        if not resultListFrame:
-            resultListFrame = await self.wait_for_frame_by_url_fragment("casefile_SearchResultList.jsp", 30)
+    # === REPLACE WITH WORKING EXTRACTION METHODS ===
+    async def extract_decedent_info_atomic(self):
+        """Extract decedent info using stable frame locators."""
+        loc = self._doc_loc()
 
-        # Wait for the table
-        # We'll look for anchors with id like inst0, inst1, ... or with onclick loadRecord(...)
-        await resultListFrame.wait_for_load_state("domcontentloaded", timeout=15000)
+        # Ensure correct tab is active
+        await self.ensure_decedent_tab()
 
-        anchors = await resultListFrame.query_selector_all("a.link[id^='inst'], a.link[onclick*='loadRecord']")
-        return resultListFrame, anchors
-
-    async def click_result_link_by_index(self, resultListFrame, index):
-        # Click via JS to avoid overlay issues
-        selector = f"a.link#inst{index}"
-        handle = await resultListFrame.query_selector(selector)
-        if handle:
-            await resultListFrame.eval_on_selector(selector, "el => el.click()")
-            return True
-
-        # Fallback by Nth link
-        anchors = await resultListFrame.query_selector_all("a.link[onclick*='loadRecord']")
-        if index < len(anchors):
-            await anchors[index].evaluate("el => el.click()")
-            return True
-        return False
-
-    async def wait_details_loaded(self, timeout_s=30):
-        """
-        After clicking a record link, details page loads within:
-        bodyframe -> documentFrame -> docInfoFrame
-        We wait until docInfoFrame has loaded expected content.
-        """
-        bodyframe = await self.wait_for_frame_by_name("bodyframe", 30000)
-        # Find documentFrame
-        documentFrame = None
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            for f in bodyframe.child_frames:
-                if f.name == "documentFrame":
-                    documentFrame = f
+        # Extract filing date
+        filing_date = ""
+        for _ in range(30):
+            try:
+                fd_cell = loc.locator("#fieldFILING_DATEspan").locator("xpath=ancestor::tr/td[3]").first
+                txt = await fd_cell.text_content()
+                if txt and txt.strip():
+                    filing_date = txt.strip()
                     break
-            if documentFrame:
-                break
-            await asyncio.sleep(0.2)
-        if not documentFrame:
-            documentFrame = await self.wait_for_frame_by_url_fragment("DocumentInfoView.jsp", timeout_s)
+            except:
+                pass
+            await asyncio.sleep(0.5)
 
-        # Find docInfoFrame
-        docInfoFrame = None
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            for f in documentFrame.child_frames:
-                if f.name == "docInfoFrame":
-                    docInfoFrame = f
-                    break
-            if docInfoFrame:
-                break
-            await asyncio.sleep(0.2)
-        if not docInfoFrame:
-            docInfoFrame = await self.wait_for_frame_by_url_fragment("transAddDocCaseFile.do", timeout_s)
+        # Extract case file number
+        case_file_no = ""
+        try:
+            cf_cell = loc.locator("#fieldCASENUMBERspan").locator("xpath=ancestor::tr/td[3]").first
+            case_file_no = (await cf_cell.text_content() or "").strip()
+        except:
+            pass
 
-        await docInfoFrame.wait_for_load_state("domcontentloaded", timeout=15000)
-        return bodyframe, documentFrame, docInfoFrame
+        # Extract address components
+        addr = city = state = zipc = ""
 
-    async def safe_click_tab(self, frame, tab_text, retries=3):
-        """Safely click a tab by text, handling frame detachment issues."""
+        try:
+            addr_cell = loc.locator("#fcaddrCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr/td[3]").first
+            addr = (await addr_cell.text_content() or "").strip()
+        except:
+            pass
+
+        try:
+            city_cell = loc.locator("#fccityCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr/td[3]").first
+            city = (await city_cell.text_content() or "").strip()
+        except:
+            pass
+
+        try:
+            # state and zip live in nested table
+            st_row = loc.locator("#fcstateCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr").first
+            st_cell = st_row.locator("td").nth(2).locator("table td").nth(0)
+            zp_cell = st_row.locator("td").nth(2).locator("table td").nth(2)
+            state = ((await st_cell.text_content()) or "").strip()
+            zipc  = ((await zp_cell.text_content()) or "").strip()
+        except:
+            pass
+
+        parts = [p for p in [addr, city, state, zipc] if p]
+        decedent_address = ", ".join(parts) if parts else ""
+
+        return {
+            "case_file_no": case_file_no,
+            "filing_date": filing_date,
+            "decedent_address": decedent_address
+        }
+
+    async def extract_representatives_atomic(self):
+        """Extract representatives using stable frame locators."""
+        loc = self._doc_loc()
+        
+        # Wait for representatives content
+        try:
+            await loc.locator("text=Personal Representative").first.wait_for(timeout=4000)
+        except:
+            await loc.locator("tr.evenrow, tr.oddrow").first.wait_for(timeout=6000)
+
+        # Extract representative data
+        rows = await loc.locator("tr.evenrow, tr.oddrow").all_text_contents()
+        reps = []
+        current = {"name": "", "address": ""}
+
+        def looks_like_address(t: str) -> bool:
+            u = t.upper()
+            return any(ch.isdigit() for ch in t) or any(k in u for k in [
+                "AVE","ST","STREET","AVENUE","ROAD","RD","LANE","LN","DR","DRIVE",
+                "APT","SUITE","PO BOX","BLVD","COURT","CT"
+            ])
+
+        for raw in rows:
+            t = raw.strip()
+            if not t:
+                continue
+            if not looks_like_address(t) and len(t) < 120:
+                if current["name"]:
+                    reps.append({
+                        "representative_name": current["name"], 
+                        "representative_address": current["address"]
+                    })
+                    current = {"name": "", "address": ""}
+                current["name"] = t
+            else:
+                current["address"] = f"{current['address']} {t}".strip() if current["address"] else t
+
+        if current["name"]:
+            reps.append({
+                "representative_name": current["name"], 
+                "representative_address": current["address"]
+            })
+
+        return reps
+
+    async def safe_click_tab(self, tab_text, retries=3):
+        """Safely click a tab by text using frame locators."""
+        tabs = self._tabs_loc()
         for attempt in range(retries):
             try:
-                # Wait for the tab structure to be loaded
-                await frame.wait_for_selector("ul.tabs", timeout=10000)
-                await asyncio.sleep(0.5)
-                
-                # Try multiple selectors based on the HTML structure you provided
-                selectors_to_try = [
+                for sel in [
                     f"span.tabs-title:has-text('{tab_text}')",
                     f"li:has-text('{tab_text}') span.tabs-inner",
                     f"li:has-text('{tab_text}')",
-                    f"span:has-text('{tab_text}')"
-                ]
-                
-                clicked = False
-                for selector in selectors_to_try:
+                    f"span:has-text('{tab_text}')",
+                ]:
                     try:
-                        await frame.wait_for_selector(selector, timeout=5000)
-                        await frame.click(selector, timeout=5000)
-                        clicked = True
-                        break
+                        await tabs.locator(sel).first.click(timeout=4000)
+                        return True
                     except:
                         continue
-                
-                # If regular clicking failed, try JavaScript
-                if not clicked:
-                    try:
-                        clicked = await frame.evaluate(f"""
-                            () => {{
-                                const spans = Array.from(document.querySelectorAll('span.tabs-title'));
-                                const targetSpan = spans.find(span => span.textContent.trim().includes('{tab_text}'));
-                                if (targetSpan) {{
-                                    targetSpan.click();
-                                    return true;
-                                }}
-                                
-                                // Try clicking the parent li element
-                                const lis = Array.from(document.querySelectorAll('li'));
-                                const targetLi = lis.find(li => li.textContent.includes('{tab_text}'));
-                                if (targetLi) {{
-                                    targetLi.click();
-                                    return true;
-                                }}
-                                return false;
-                            }}
-                        """)
-                    except Exception as js_err:
-                        print(f"JavaScript click failed: {js_err}")
-                
-                if clicked:
+
+                # Fallback: JS click
+                try:
+                    await tabs.evaluate(f"""
+                        () => {{
+                            const spans = Array.from(document.querySelectorAll('span.tabs-title'));
+                            const t = spans.find(x => x.textContent.trim().includes('{tab_text}'));
+                            if (t) {{ t.click(); return true; }}
+                            const li = Array.from(document.querySelectorAll('li')).find(x => x.textContent.includes('{tab_text}'));
+                            if (li) {{ li.click(); return true; }}
+                            return false;
+                        }}
+                    """)
                     return True
-                    
-            except Exception as e:
-                print(f"Failed to click tab '{tab_text}' attempt {attempt + 1}: {e}")
+                except:
+                    pass
+            except:
                 if attempt < retries - 1:
-                    await asyncio.sleep(1)
-                continue
+                    await asyncio.sleep(0.8)
         return False
 
-    async def get_tabs_frame(self, docInfoFrame, timeout_s=10):
-        """Get the tabs frame from within the docInfoFrame."""
-        tabs_frame = None
-        deadline = time.time() + timeout_s
-        while time.time() < deadline:
-            for f in docInfoFrame.child_frames:
-                if f.name == "tabs":
-                    tabs_frame = f
-                    break
-            if tabs_frame:
-                break
-            await asyncio.sleep(0.2)
-        if not tabs_frame:
-            tabs_frame = await self.wait_for_frame_by_url_fragment("tabbar.do", timeout_s)
-        return tabs_frame
+    async def click_result_link_by_index(self, index: int) -> bool:
+        """Click row N on the current page using stable frame locators."""
+        res = self._res_list_loc()
 
-    async def extract_decedent_info_from_docinfo(self, docInfoFrame):
-        """
-        Extract Filing Date and decedent address fields from Decedent & Estate Info tab.
-        This is the main function that extracts the data you need.
-        """
-        try:
-            html = await docInfoFrame.content()
-            soup = BeautifulSoup(html, "html.parser")
+        # Try primary selector
+        a = res.locator(f"a.link#inst{index}").first
+        if await a.count():
+            try:
+                await a.click(timeout=6000)
+                return True
+            except:
+                pass
 
-            filing_date = ""
-            decedent_address = ""
+        # Fallback: Nth clickable link
+        all_links = res.locator("a.link[onclick*='loadRecord']")
+        if await all_links.count() > index:
+            try:
+                await all_links.nth(index).click(timeout=6000)
+                return True
+            except:
+                pass
 
-            # Extract Filing Date
-            filing_date_span = soup.select_one("#fieldFILING_DATEspan")
-            if filing_date_span:
-                # Find the parent row and then the value cell
-                row = filing_date_span.find_parent("tr")
-                if row:
-                    cells = row.find_all("td")
-                    if len(cells) >= 3:
-                        filing_date = cells[2].get_text(" ", strip=True)
-
-            # Extract address components
-            address_parts = {}
-            
-            # Address
-            addr_span = soup.select_one("#fcaddrCORESPONDENT_ADDRESSspan")
-            if addr_span:
-                row = addr_span.find_parent("tr")
-                if row:
-                    cells = row.find_all("td")
-                    if len(cells) >= 3:
-                        address_parts['address'] = cells[2].get_text(" ", strip=True)
-
-            # City
-            city_span = soup.select_one("#fccityCORESPONDENT_ADDRESSspan")
-            if city_span:
-                row = city_span.find_parent("tr")
-                if row:
-                    cells = row.find_all("td")
-                    if len(cells) >= 3:
-                        address_parts['city'] = cells[2].get_text(" ", strip=True)
-
-            # State and Zip
-            state_span = soup.select_one("#fcstateCORESPONDENT_ADDRESSspan")
-            if state_span:
-                row = state_span.find_parent("tr")
-                if row:
-                    # Look for the nested table that contains state and zip
-                    nested_table = row.select_one("table.base")
-                    if nested_table:
-                        nested_cells = nested_table.select("td")
-                        if len(nested_cells) >= 1:
-                            address_parts['state'] = nested_cells[0].get_text(" ", strip=True)
-                        if len(nested_cells) >= 3:
-                            address_parts['zip'] = nested_cells[2].get_text(" ", strip=True)
-
-            # Combine address components
-            address_components = []
-            for part in ['address', 'city', 'state', 'zip']:
-                if part in address_parts and address_parts[part]:
-                    address_components.append(address_parts[part])
-            
-            decedent_address = ", ".join(address_components) if address_components else ""
-
-            return {
-                "filing_date": filing_date,
-                "decedent_address": decedent_address
-            }
-
-        except Exception as e:
-            print(f"Error extracting decedent info: {e}")
-            return {
-                "filing_date": "",
-                "decedent_address": ""
-            }
-
-    async def extract_representatives_from_docinfo(self, docInfoFrame):
-        """
-        Parse representative name and address under the 'Personal Representative(s):' subsection.
-        """
-        try:
-            html = await docInfoFrame.content()
-            soup = BeautifulSoup(html, "html.parser")
-            reps = []
-
-            # Look for representative rows
-            rows = soup.select("tr.evenrow, tr.oddrow")
-            
-            current_rep = {"name": "", "address": ""}
-            
-            for row in rows:
-                cells = row.select("td")
-                if len(cells) >= 2:
-                    text_content = cells[1].get_text(" ", strip=True)
-                    
-                    # Skip empty content
-                    if not text_content or text_content.isspace():
-                        continue
-                    
-                    # If this looks like a name (no digits, relatively short)
-                    if not any(char.isdigit() for char in text_content) and len(text_content) < 100:
-                        # If we already have a representative, save it
-                        if current_rep["name"]:
-                            reps.append({
-                                "representative_name": current_rep["name"],
-                                "representative_address": current_rep["address"]
-                            })
-                            current_rep = {"name": "", "address": ""}
-                        
-                        current_rep["name"] = text_content
-                    
-                    # If this looks like an address (contains digits or address keywords)
-                    elif (any(char.isdigit() for char in text_content) or 
-                          any(keyword in text_content.upper() for keyword in 
-                              ["AVE", "ST", "STREET", "AVENUE", "ROAD", "RD", "LANE", "LN", "DR", "DRIVE", "APT", "SUITE"])):
-                        if current_rep["address"]:
-                            current_rep["address"] += " " + text_content
-                        else:
-                            current_rep["address"] = text_content
-            
-            # Don't forget the last representative
-            if current_rep["name"]:
-                reps.append({
-                    "representative_name": current_rep["name"],
-                    "representative_address": current_rep["address"]
-                })
-
-            return reps
-
-        except Exception as e:
-            print(f"Error extracting representatives: {e}")
-            return []
+        return False
 
     async def click_back_to_results(self, retries=5):
-        """
-        Enhanced back to results with better retry logic and waits.
-        """
+        """Return to results page using working navigation."""
         for attempt in range(retries):
             try:
-                # Wait a bit for any ongoing navigation to complete
-                await asyncio.sleep(1)
-                
+                await asyncio.sleep(0.8)
                 bodyframe = await self.wait_for_frame_by_name("bodyframe", 10000)
-                
-                # Find resnavframe
+
                 resnavframe = None
-                for retry in range(10):  # 5 second max wait
+                for _ in range(10):
                     for f in bodyframe.child_frames:
                         if f.name == "resnavframe":
                             resnavframe = f
                             break
                     if resnavframe:
                         break
-                    await asyncio.sleep(0.5)
-                
+                    await asyncio.sleep(0.3)
+
                 if not resnavframe:
                     resnavframe = await self.wait_for_frame_by_url_fragment("navbar.do?page=search.details", 10)
 
                 await resnavframe.wait_for_load_state("domcontentloaded", timeout=10000)
-                await asyncio.sleep(1)  # Extra wait for stability
-                
-                # Try multiple methods to click back
+                await asyncio.sleep(0.5)
+
                 clicked = False
-                
-                # Method 1: Text-based selector
-                try:
-                    await resnavframe.click("text='Back to Results'", timeout=5000)
-                    clicked = True
-                except:
-                    pass
-                
-                # Method 2: onclick attribute
-                if not clicked:
+                for sel in [
+                    "text='Back to Results'",
+                    "a[onclick*='executeSearchNav'][onclick*='results']",
+                    "img[alt='Back to Results']",
+                ]:
                     try:
-                        await resnavframe.click("a[onclick*='executeSearchNav'][onclick*='results']", timeout=5000)
+                        await resnavframe.click(sel, timeout=3000)
                         clicked = True
+                        break
                     except:
                         pass
-                
-                # Method 3: Image alt attribute
-                if not clicked:
-                    try:
-                        await resnavframe.click("img[alt='Back to Results']", timeout=5000)
-                        clicked = True
-                    except:
-                        pass
-                
-                # Method 4: JavaScript evaluation
+
                 if not clicked:
                     try:
                         await resnavframe.evaluate("""
                             () => {
                                 const elements = Array.from(document.querySelectorAll('a, img'));
-                                const backElement = elements.find(el => 
-                                    el.textContent.includes('Back to Results') || 
+                                const backElement = elements.find(el =>
+                                    el.textContent.includes('Back to Results') ||
                                     el.alt === 'Back to Results' ||
-                                    (el.onclick && el.onclick.toString().includes('results')) ||
-                                    (el.href && el.href.includes('#'))
+                                    (el.onclick && el.onclick.toString().includes('results'))
                                 );
                                 if (backElement) {
-                                    if (backElement.onclick) {
-                                        backElement.onclick();
-                                    } else if (backElement.parentElement && backElement.parentElement.onclick) {
-                                        backElement.parentElement.onclick();
-                                    } else {
-                                        backElement.click();
-                                    }
+                                    if (backElement.onclick) backElement.onclick();
+                                    else if (backElement.parentElement && backElement.parentElement.onclick) backElement.parentElement.onclick();
+                                    else backElement.click();
                                     return true;
                                 }
                                 return false;
@@ -666,221 +516,259 @@ class DelawareScraper:
                         clicked = True
                     except:
                         pass
-                
+
                 if clicked:
-                    # Wait for results to load back
-                    await asyncio.sleep(2)
-                    # Verify we're back at results by checking for result frame
+                    await asyncio.sleep(1.2)
                     try:
                         await self.wait_for_frame_by_name("bodyframe", 5000)
-                        result_frame = await self.wait_for_frame_by_url_fragment("SearchResultsView.jsp", 5)
-                        print("Successfully returned to results page")
+                        await self.wait_for_frame_by_url_fragment("SearchResultsView.jsp", 5)
+                        print("✅ Returned to results page")
                         return True
                     except:
-                        # If verification fails, continue to retry
                         print(f"Back button clicked but results verification failed, attempt {attempt + 1}")
                         continue
                 else:
                     print(f"Could not find back button, attempt {attempt + 1}")
-                
+
             except Exception as e:
                 print(f"Back to results attempt {attempt + 1} failed: {e}")
                 if attempt < retries - 1:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1.2)
                 continue
-        
-        print("Failed to return to results after all attempts")
+
+        print("❌ Failed to return to results after all attempts")
         return False
 
-    async def click_next_results_page(self):
-        """
-        Next results page link is inside:
-        bodyframe -> resultFrame -> subnav (navbar.do?page=search.resultNav.next&subnav=1...)
-        """
-        bodyframe = await self.wait_for_frame_by_name("bodyframe", 30000)
-        
-        # Find resultFrame first
-        resultFrame = None
-        for f in bodyframe.child_frames:
-            if f.name == "resultFrame":
-                resultFrame = f
-                break
-        
-        if not resultFrame:
-            resultFrame = await self.wait_for_frame_by_url_fragment("SearchResultsView.jsp", 20)
-
-        # subnav frame is a child frame that loads navbar.do with subnav=1
-        subnav_frame = None
-        for f in resultFrame.child_frames:
-            if f.url and "navbar.do" in f.url and "subnav=1" in f.url:
-                subnav_frame = f
-                break
-        
-        if not subnav_frame:
-            subnav_frame = await self.wait_for_frame_by_url_fragment("navbar.do?page=search.resultNav", 20)
-
-        await subnav_frame.wait_for_load_state("domcontentloaded", timeout=15000)
-        
-        # Try to click next using multiple methods
-        had_next = False
-        
-        # Method 1: Look for next button by text
-        try:
-            await subnav_frame.click("text='Next'", timeout=5000)
-            had_next = True
-        except:
-            # Method 2: Look for next button by onclick handler
-            try:
-                await subnav_frame.click("a[onclick*='navigateResults'][onclick*='next']", timeout=5000)
-                had_next = True
-            except:
-                # Method 3: Use JavaScript to find and click the next button
-                try:
-                    had_next = await subnav_frame.evaluate("""
-                        () => {
-                            const links = Array.from(document.querySelectorAll('a'));
-                            const nextLink = links.find(el => 
-                                el.textContent.includes('Next') || 
-                                (el.onclick && el.onclick.toString().includes('next'))
-                            );
-                            if (nextLink) {
-                                nextLink.click();
-                                return true;
-                            }
-                            return false;
-                        }
-                    """)
-                except:
-                    print("Could not find Next button")
-        
-        await asyncio.sleep(1.0)
-        return bool(had_next)
-
-    async def process_single_record(self, resultListFrame, row_idx):
-        """
-        Process a single record: click it, extract data, and return to results.
-        This version always refreshes frame references to avoid 'Frame was detached'.
-        """
-        # Click the row link
-        ok = await self.click_result_link_by_index(resultListFrame, row_idx)
-        if not ok:
-            print(f"Skipping row {row_idx}: link not found")
-            return None
-
-        # Wait for details to load, always get fresh frame refs
-        try:
-            bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(30)
-            await asyncio.sleep(2)  # give the DOM time to settle
-        except Exception as e:
-            print(f"Failed to load details for record {row_idx}: {e}")
-            return None
-
-        # --- Extract decedent info (fresh frame) ---
-        dec_info = {}
-        try:
-            bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(10)
-            dec_info = await self.extract_decedent_info_from_docinfo(docInfoFrame)
-        except Exception as e:
-            print(f"Error extracting decedent info for record {row_idx}: {e}")
-            dec_info = {"filing_date": "", "decedent_address": ""}
-
-        # --- Representatives tab ---
-        reps = []
-        try:
-            # ensure fresh docInfoFrame before using
-            bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(10)
-            tabs_frame = await self.get_tabs_frame(docInfoFrame, 10)
-            await tabs_frame.wait_for_load_state("domcontentloaded", timeout=10000)
-            await asyncio.sleep(1)
-
-            if await self.safe_click_tab(tabs_frame, "Representatives"):
-                await asyncio.sleep(3)  # wait for panel to refresh
-                # get fresh frame again after tab change
-                bodyframe, documentFrame, docInfoFrame = await self.wait_details_loaded(10)
-                reps = await self.extract_representatives_from_docinfo(docInfoFrame)
-        except Exception as e:
-            print(f"Failed to extract representatives for record {row_idx}: {e}")
-
-        # --- Case metadata ---
-        case_meta = {}
-        try:
-            for f in self.page.frames:
-                if f.url and "DocumentInfoView.jsp" in f.url and "caseFileId=" in f.url:
-                    qs = parse_qs(urlparse(f.url).query)
-                    case_meta = {
-                        "caseFileId": (qs.get("caseFileId") or [""])[0],
-                        "caseFileNum": (qs.get("caseFileNum") or [""])[0],
-                    }
-                    break
-        except Exception:
-            pass
-
-        base_record = {
-            "filing_date": dec_info.get("filing_date"),
-            "decedent_address": dec_info.get("decedent_address"),
-            **case_meta
-        }
-
-        # --- Return to results ---
-        try:
-            await self.click_back_to_results()
-            await asyncio.sleep(2)
-        except Exception as e:
-            print(f"Failed to go back to results after record {row_idx}: {e}")
-            return None
-
-        # --- Normalize output ---
-        if reps:
-            return [{**base_record, **rep} for rep in reps]
-        else:
-            return [{**base_record, "representative_name": "", "representative_address": ""}]
-
-    async def deep_scrape_all_results(self):
-        """
-        Iterate all result pages, open each record, extract reps and decedent info,
-        and build a list of dicts.
-        """
+    # === REPLACE THE MAIN SCRAPING METHOD ===
+    async def scrape_all_records_via_next_button(self):
+        """Fixed scraping method using working navigation pattern."""
         all_records = []
         page_index = 1
-        
-        while True:
-            # Ensure results page visible
+        max_pages = 72  # Adjust as needed
+
+        print("🎯 Starting comprehensive record scraping...")
+
+        while page_index <= max_pages:
+            print(f"\n{'='*50}")
+            print(f"📄 PROCESSING PAGE {page_index}")
+            print(f"{'='*50}")
+
+            # Wait for results list to be ready
             try:
-                resultListFrame, anchors = await self.collect_result_row_links()
-            except Exception as e:
-                print("No results frame found or results not visible:", e)
+                await self._res_list_loc().locator("a.link#inst0, a.link[onclick*='loadRecord']").first.wait_for(timeout=15000)
+            except:
+                print(f"❌ No results found on page {page_index}. Stopping.")
                 break
 
-            # Recompute anchors each loop in case of dynamic rendering
-            anchors = await resultListFrame.query_selector_all("a.link[id^='inst'], a.link[onclick*='loadRecord']")
-            num_rows = len(anchors)
-            print(f"Results page {page_index}: found {num_rows} records")
+            processed_this_page = 0
+            consecutive_misses = 0
 
-            for row_idx in range(num_rows):
-                print(f"Processing record {row_idx + 1} of {num_rows} on page {page_index}")
-                
-                record_data = await self.process_single_record(resultListFrame, row_idx)
-                if record_data:
-                    all_records.extend(record_data)
-                    print(f"✅ Successfully processed record {row_idx + 1}")
+            # Process up to 40 records per page
+            for row_idx in range(40):
+                print(f"  📝 Processing record {row_idx + 1} of 40 on page {page_index}")
+
+                # Click the record link
+                success = await self.click_result_link_by_index(row_idx)
+                if not success:
+                    print(f"  ❌ Could not click record {row_idx + 1}")
+                    consecutive_misses += 1
+                    if consecutive_misses >= 3:
+                        print("  ⚠ Several consecutive misses, assuming end of page")
+                        break
+                    continue
+
+                # Wait for document frame to load
+                try:
+                    await self._doc_loc().locator("body").first.wait_for(state="attached", timeout=20000)
+                    await asyncio.sleep(1.0)
+                except Exception as e:
+                    print(f"  ❌ Failed to load details for record {row_idx + 1}: {e}")
+                    consecutive_misses += 1
+                    continue
+
+                # Extract decedent info
+                dec_info = {}
+                try:
+                    dec_info = await self.extract_decedent_info_atomic()
+                    print(f"  ✅ Decedent info extracted")
+                except Exception as e:
+                    print(f"  ⚠ Decedent extraction failed: {e}")
+
+                # Extract representatives
+                reps = []
+                try:
+                    clicked = await self.safe_click_tab("Representatives", retries=2)
+                    if clicked:
+                        await asyncio.sleep(1.0)
+                        reps = await self.extract_representatives_atomic()
+                        print(f"  ✅ {len(reps)} representatives extracted")
+                except Exception as e:
+                    print(f"  ⚠ Representatives extraction failed: {e}")
+
+                # Get case metadata from URL
+                case_meta = {}
+                try:
+                    for f in self.page.frames:
+                        if f.url and "DocumentInfoView.jsp" in f.url and "caseFileId=" in f.url:
+                            qs = parse_qs(urlparse(f.url).query)
+                            case_meta = {
+                                "caseFileId": (qs.get("caseFileId") or [""])[0],
+                                "caseFileNum": (qs.get("caseFileNum") or [""])[0],
+                            }
+                            break
+                except Exception as e:
+                    print(f"  ⚠ Case metadata error: {e}")
+
+                # Combine data
+                base_record = {
+                    "case_file_no": dec_info.get("case_file_no", ""),
+                    "filing_date": dec_info.get("filing_date", ""),
+                    "decedent_address": dec_info.get("decedent_address", ""),
+                    **case_meta,
+                }
+
+                if reps:
+                    record_data = [{**base_record, **rep} for rep in reps]
                 else:
-                    print(f"❌ Failed to process record {row_idx + 1}")
+                    record_data = [{**base_record, "representative_name": "", "representative_address": ""}]
 
-                # Wait a moment before processing next record
-                await asyncio.sleep(1)
+                all_records.extend(record_data)
+                processed_this_page += len(record_data)
+                consecutive_misses = 0
 
-            # Try next page
-            has_next = await self.click_next_results_page()
-            if not has_next:
-                print("No next page button or reached last page.")
+                print(f"  ✅ Record {row_idx + 1} processed: {len(record_data)} entries")
+
+                # Return to results page
+                back_success = await self.click_back_to_results()
+                if not back_success:
+                    print("  ❌ Failed to return to results, stopping page processing")
+                    break
+
+                await asyncio.sleep(0.5)
+
+            print(f"✅ Page {page_index} complete: {processed_this_page} records extracted")
+
+            # Navigate to next page
+            if page_index < max_pages:
+                print(f"🔄 Navigating to page {page_index + 1}...")
+                next_success = await self.goto_results_page(page_index + 1)
+                if not next_success:
+                    print("❌ Failed to navigate to next page, stopping")
+                    break
+                page_index += 1
+                await asyncio.sleep(1.0)
+            else:
                 break
 
-            # Wait for next results list to load
-            await asyncio.sleep(2)
-            page_index += 1
+        print(f"\n{'='*50}")
+        print(f"🎉 SCRAPING COMPLETE")
+        print(f"📊 {len(all_records)} total records extracted")
+        print(f"{'='*50}")
 
         return all_records
 
+    async def goto_results_page(self, page_number: int, wait_timeout: int = 20000) -> bool:
+        """
+        Robust navigation to a specific results page.
+        Replaces previous implementation with a fallback that mirrors the working
+        simple_page_navigation approach: it searches for the pageNumber input across
+        frames, fills it, then triggers the JS navigation (or clicks a Go link),
+        and finally waits for the results list to become available.
+        """
+        print(f"🔎 goto_results_page -> target {page_number}")
+        # First try the known subnav locator (fast path)
+        try:
+            subnav = self._res_subnav_middle_loc()
+            input_locator = subnav.locator("input[name='pageNumber']").first
+            await input_locator.wait_for(state="attached", timeout=6000)
+            await input_locator.fill(str(page_number))
+
+            # Try clicking a Go link if present
+            go_link = subnav.locator("a[onclick*='goToResultPage'], a[onclick*='goToResultPage()']").first
+            if await go_link.count():
+                try:
+                    await go_link.click()
+                except Exception:
+                    # fallback to evaluating JS on the frame
+                    await subnav.evaluate("() => { if (window.goToResultPage) goToResultPage(); }")
+            else:
+                # Try calling the function directly in that frame
+                await subnav.evaluate("() => { if (window.goToResultPage) goToResultPage(); }")
+
+            # wait for results list to refresh
+            res = self._res_list_loc()
+            await res.locator("a.link#inst0, a.link[onclick*='loadRecord']").first.wait_for(timeout=wait_timeout)
+            await asyncio.sleep(0.6)
+            print(f"✅ Navigated to page {page_number} (fast path)")
+            return True
+
+        except Exception as fast_err:
+            print(f"⚠ fast path for goto_results_page failed: {fast_err}")
+
+        # Fallback: search frames for an input[name='pageNumber'] (mirrors simple_page_navigation)
+        try:
+            input_frame = None
+            input_element = None
+
+            for f in self.page.frames:
+                try:
+                    handles = await f.query_selector_all("input[name='pageNumber']")
+                    if handles:
+                        input_frame = f
+                        input_element = handles[0]
+                        break
+                except Exception:
+                    continue
+
+            if not input_element:
+                print("❌ Could not find pageNumber input in any frame (fallback)")
+                return False
+
+            # Fill the input using the frame handle
+            await input_element.fill(str(page_number))
+
+            # Try to call the JS navigation function in that frame
+            try:
+                result = await input_frame.evaluate(
+                    """() => {
+                        try {
+                            if (typeof goToResultPage === 'function') { goToResultPage(); return true; }
+                            if (window.goToResultPage) { window.goToResultPage(); return true; }
+                            // try clicking any nearby 'Go' button if present
+                            const goBtn = Array.from(document.querySelectorAll('a, input, button')).find(el =>
+                                (el.getAttribute && (el.getAttribute('onclick') || '').includes('goToResultPage')) ||
+                                (el.textContent && /go\s*to\s*result/i.test(el.textContent))
+                            );
+                            if (goBtn) { goBtn.click(); return true; }
+                            return false;
+                        } catch (e) {
+                            return false;
+                        }
+                    }"""
+                )
+                if not result:
+                    print("⚠ Fallback JS navigation did not report success; continuing to wait for result marker")
+
+            except Exception as eval_err:
+                print(f"⚠ Evaluating JS in fallback frame failed: {eval_err}")
+
+            # Wait for results list to refresh
+            try:
+                # The results list lives in resultListFrame — use the locator helper
+                res = self._res_list_loc()
+                await res.locator("a.link#inst0, a.link[onclick*='loadRecord']").first.wait_for(timeout=wait_timeout)
+                await asyncio.sleep(0.6)
+                print(f"✅ Navigated to page {page_number} (fallback)")
+                return True
+            except Exception as wait_err:
+                print(f"❌ Waiting for results after fallback navigation failed: {wait_err}")
+                return False
+
+        except Exception as e:
+            print(f"❌ goto_results_page unexpected failure: {e}")
+            return False
+
+    # === KEEP YOUR EXISTING EXPORT METHOD ===
     def write_monthwise_xlsx(self, records, out_path):
         """
         records: list of dicts with keys:
@@ -893,7 +781,6 @@ class DelawareScraper:
         Creates an XLSX with one sheet per YYYY-MM.
         """
         wb = Workbook()
-        # Remove default sheet; we will create sheets on demand
         if wb.active:
             wb.remove(wb.active)
 
@@ -902,11 +789,9 @@ class DelawareScraper:
             fd = (r.get("filing_date") or "").strip()
             month_key = "Unknown"
             try:
-                # Accept MM/DD/YYYY or M/D/YYYY
                 dt = datetime.strptime(fd, "%m/%d/%Y")
                 month_key = dt.strftime("%Y-%m")
             except Exception:
-                # Try alternative known formats if any
                 try:
                     dt = datetime.strptime(fd, "%m/%d/%y")
                     month_key = dt.strftime("%Y-%m")
@@ -914,15 +799,15 @@ class DelawareScraper:
                     pass
             by_month[month_key].append(r)
 
-        headers = ["filing_date", "caseFileNum", "caseFileId", "decedent_address", "representative_name", "representative_address"]
+        headers = ["case_file_no", "filing_date", "caseFileNum", "caseFileId", "decedent_address", "representative_name", "representative_address"]
 
         for month in sorted(by_month.keys()):
-            ws = wb.create_sheet(title=month[:31])  # Excel sheet name limit
+            ws = wb.create_sheet(title=month[:31])
             ws.append(headers)
             for r in by_month[month]:
                 ws.append([r.get(h, "") for h in headers])
 
-            # Optional: auto-width
+            # Auto-adjust column widths
             for col_idx, h in enumerate(headers, start=1):
                 max_len = max([len(str(h))] + [len(str(ws.cell(row=i, column=col_idx).value or "")) for i in range(2, ws.max_row + 1)])
                 ws.column_dimensions[get_column_letter(col_idx)].width = min(60, max_len + 2)
@@ -933,44 +818,84 @@ class DelawareScraper:
 
 async def run_full_scrape_and_export(scraper):
     """
-    Call this after your existing click_search_button() and result load wait.
+    Run the complete scraping process and export results.
+    Only keep records that have representative_name and representative_address.
     """
-    all_records = await scraper.deep_scrape_all_results()
-    # Write JSON mirror
+    print("🚀 Starting full scraping process...")
+    all_records = await scraper.scrape_all_records_via_next_button()
+
+    # ✅ Filter records to only keep those with representative info
+    filtered_records = [
+        r for r in all_records
+        if r.get("representative_name") and r.get("representative_address")
+    ]
+
+    # Ensure output directory exists
     OUT_DIR.mkdir(exist_ok=True)
-    (OUT_DIR / "all_records.json").write_text(json.dumps(all_records, ensure_ascii=False, indent=2), encoding="utf-8")
-    # Write month-wise XLSX
+
+    # Save JSON file
+    json_path = OUT_DIR / "all_records.json"
+    json_path.write_text(json.dumps(filtered_records, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"✅ JSON saved: {json_path}")
+
+    # Save XLSX file with month-wise sheets
     xlsx_path = OUT_DIR / "delaware_records_monthwise.xlsx"
-    scraper.write_monthwise_xlsx(all_records, xlsx_path)
+    scraper.write_monthwise_xlsx(filtered_records, xlsx_path)
+    print(f"✅ XLSX saved: {xlsx_path}")
+
+    return filtered_records
+
 
 
 async def main():
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False)  # set False while debugging
-        context = await browser.new_context()
-        page = await context.new_page()
+    """Main function with persistent context for stability."""
+    # Use persistent context like the working code
+    profile_dir = Path(os.environ.get("CHROME_PROFILE_DIR", "chrome_profile")).resolve()
+    profile_dir.mkdir(exist_ok=True)
+    print(f"Using Chrome profile: {profile_dir}")
 
-        scraper = DelawareScraper(page, browser=browser, context=context)
+    async with async_playwright() as pw:
+        context = await pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            channel="chrome",
+            headless=False,
+            ignore_https_errors=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+        )
+
+        page = context.pages[0] if context.pages else await context.new_page()
+        scraper = DelawareScraper(page, browser=None, context=context)
+        
         try:
+            # Execute the scraping workflow
             await scraper.goto_login()
             await scraper.accept_terms()
             await scraper.click_search_public_records()
             await scraper.enter_filing_dates()
             await scraper.click_search_button()
-            # sleep for 10 seconds to allow results to load
+            
+            # Wait for results to load
             await asyncio.sleep(10)
+            
+            # Run the full scraping and export
             await run_full_scrape_and_export(scraper)
-        except Exception:
+            
+        except Exception as e:
             print("❌ Scraper failed with exception:")
             traceback.print_exc()
-            # dump page / screenshot for debugging
             try:
                 await scraper._dump_debug("fatal_error")
-            except Exception as e:
-                print("debug dump also failed:", e)
+            except Exception as debug_error:
+                print("Debug dump also failed:", debug_error)
             raise
         finally:
-            await browser.close()
+            await context.close()
 
 
 if __name__ == "__main__":
