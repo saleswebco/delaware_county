@@ -30,7 +30,7 @@ jobs:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       run: |
-        python scrape_delaware_daily.py
+        python main.py
         
     - name: Notify on failure
       if: failure()
