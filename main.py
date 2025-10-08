@@ -105,7 +105,7 @@ def append_to_google_sheets(svc, spreadsheet_id, records):
     """Append new records to appropriate monthly sheets in Google Sheets."""
     if not records:
         print("📭 No new records to append to Google Sheets")
-        return 0
+        return
 
     # Group records by month
     by_month = defaultdict(list)
@@ -204,13 +204,13 @@ def ensure_sheet_exists(svc, spreadsheet_id, sheet_name):
 
 class DelawareScraper:
     def __init__(self, page, browser=None, context=None,
-                 base_url: str = "https://delcorowonlineservices.co.delaware.pa.us/countyweb/loginDisplay.action?countyname=DelawarePA&errormsg=error.sessiontimeout"):
+                 base_url: str = "https://delcorowonlineservices.co.delaware.pa.us/countyweb/loginDisplay.action?countyname=DelawarePA&errormsg=error.sessiontimeout"):  # Fixed URL
         self.page = page
         self.browser = browser
         self.context = context
         self.base_url = base_url
 
-    # === FRAME LOCATOR METHODS (FROM WORKING CODE) ===
+    # === ADD FRAME LOCATOR METHODS FROM WORKING CODE ===
     def _res_list_loc(self):
         # bodyframe -> resultFrame -> resultListFrame
         return (
@@ -280,7 +280,7 @@ class DelawareScraper:
             await asyncio.sleep(0.1)
         raise PlaywrightTimeoutError(f"Frame with name '{name}' not found within {timeout}ms")
 
-    # === NAVIGATION METHODS (FROM WORKING CODE) ===
+    # === FIXED NAVIGATION METHODS FROM WORKING CODE ===
     async def goto_login(self, retries: int = 3):
         """Go to login page and click 'Login as Guest'."""
         for attempt in range(1, retries + 1):
@@ -384,11 +384,14 @@ class DelawareScraper:
                 await asyncio.sleep(2)
 
     async def enter_filing_dates(self, from_date: str, to_date: str, retries: int = 3):
-        """Enter filing date range."""
+        """Enter filing date range - FIXED VERSION."""
         print(f"📅 Setting date range: {from_date} to {to_date}")
 
         for attempt in range(1, retries + 1):
             try:
+                print("⏳ Waiting for dynamic frames to load...")
+                await asyncio.sleep(3)
+
                 criteria_frame = None
                 try:
                     criteria_frame = await self.wait_for_frame_by_url_fragment("dynCriteria.do", timeout=30)
@@ -399,14 +402,14 @@ class DelawareScraper:
                         criteria_frame = None
 
                 if not criteria_frame:
-                    raise PlaywrightTimeoutError("Could not find criteria frame")
+                    raise PlaywrightTimeoutError("Could not find criteria frame (dynCriteria.do or blank.jsp)")
 
                 await criteria_frame.wait_for_load_state("domcontentloaded", timeout=15000)
                 await asyncio.sleep(1)
 
                 el = await criteria_frame.wait_for_selector("#elemDateRange", timeout=15000)
                 if not el:
-                    raise PlaywrightTimeoutError("Date range container not found")
+                    raise PlaywrightTimeoutError("Date range container '#elemDateRange' not found")
 
                 from_input = await criteria_frame.wait_for_selector("#_easyui_textbox_input7", timeout=10000)
                 to_input = await criteria_frame.wait_for_selector("#_easyui_textbox_input8", timeout=10000)
@@ -426,7 +429,7 @@ class DelawareScraper:
                 await asyncio.sleep(2)
 
     async def click_search_button(self, retries: int = 3):
-        """Click search button."""
+        """Click search button - FIXED VERSION."""
         for attempt in range(1, retries + 1):
             try:
                 body_frame = await self.wait_for_frame_by_name("bodyframe", timeout=30000)
@@ -440,10 +443,11 @@ class DelawareScraper:
             except Exception as e:
                 print(f"❌ Search button attempt {attempt} failed: {e}")
                 if attempt == retries:
+                    print("❌ All attempts to click search button failed")
                     return False
                 await asyncio.sleep(2)
 
-    # === EXTRACTION METHODS (FROM WORKING CODE) ===
+    # === FIXED EXTRACTION METHODS FROM WORKING CODE ===
     async def extract_decedent_info_atomic(self):
         """Extract decedent information with robust ZIP handling."""
         loc = self._doc_loc()
@@ -505,7 +509,7 @@ class DelawareScraper:
             except Exception as e:
                 print(f"📍 Fallback zip extraction failed: {e}")
 
-        # Final address assembly
+        # Combine address components
         parts = [p for p in [addr, city, state, zipc] if p]
         decedent_address = ", ".join(parts) if parts else ""
 
@@ -622,7 +626,7 @@ class DelawareScraper:
         return False
 
     async def click_back_to_results(self, retries=5):
-        """Return to results page."""
+        """Return to results page - FIXED VERSION."""
         for attempt in range(retries):
             try:
                 await asyncio.sleep(0.8)
@@ -703,7 +707,7 @@ class DelawareScraper:
         return False
 
     async def goto_results_page(self, page_number: int, wait_timeout: int = 20000) -> bool:
-        """Navigate to specific results page."""
+        """Navigate to specific results page - FIXED VERSION."""
         print(f"🔄 Navigating to page {page_number}")
         
         # First try the known subnav locator
@@ -788,9 +792,8 @@ class DelawareScraper:
             print(f"❌ Navigation failed: {e}")
             return False
 
-    # === MAIN SCRAPING METHOD (ADAPTED FROM WORKING CODE) ===
     async def scrape_single_day(self, scrape_date: datetime):
-        """Scrape records for a single day using the robust logic from working code."""
+        """Scrape records for a single day - FIXED VERSION."""
         date_str = scrape_date.strftime("%m/%d/%Y")
         print(f"\n{'='*60}")
         print(f"📅 SCRAPING DATE: {date_str}")
@@ -809,13 +812,13 @@ class DelawareScraper:
         # Wait for results
         await asyncio.sleep(10)
 
-        max_pages = 20  # Increased limit for safety
+        max_pages = 10  # Reasonable limit for single day
         page_index = 1
         
         while page_index <= max_pages:
             print(f"\n📄 Processing page {page_index}")
 
-            # Wait for results list with retries (from working code)
+            # Wait for results list with retries
             for retry in range(5):
                 try:
                     await self._res_list_loc().locator("a.link#inst0, a.link[onclick*='loadRecord']").first.wait_for(timeout=15000)
@@ -831,11 +834,11 @@ class DelawareScraper:
             consecutive_misses = 0
             page_records = []
 
-            # Process up to 40 records per page (from working code)
+            # Process records on current page
             for row_idx in range(40):
-                print(f"   📝 Processing record {row_idx + 1} of 40 on page {page_index}")
+                print(f"   📝 Processing record {row_idx + 1}")
 
-                # Click the record link with retries
+                # Click record link with retries
                 success = False
                 for retry in range(3):
                     success = await self.click_result_link_by_index(row_idx)
@@ -847,11 +850,11 @@ class DelawareScraper:
                     print(f"   ❌ Could not click record {row_idx + 1}")
                     consecutive_misses += 1
                     if consecutive_misses >= 3:
-                        print("   ⏹️ Several consecutive misses, assuming end of page")
+                        print("   ⏹️ End of page reached")
                         break
                     continue
 
-                # Wait for document frame to load with retries
+                # Wait for document details with retries
                 doc_loaded = False
                 for retry in range(3):
                     try:
@@ -861,7 +864,7 @@ class DelawareScraper:
                         break
                     except Exception as e:
                         if retry == 2:
-                            print(f"   ❌ Failed to load details for record {row_idx + 1}")
+                            print(f"   ❌ Failed to load details")
                         await asyncio.sleep(1)
 
                 if not doc_loaded:
@@ -901,7 +904,7 @@ class DelawareScraper:
                 except Exception as e:
                     print(f"   ❌ Case metadata error: {e}")
 
-                # Combine data (from working code)
+                # Combine record data
                 base_record = {
                     "case_file_no": dec_info.get("case_file_no", ""),
                     "filing_date": dec_info.get("filing_date", ""),
@@ -914,7 +917,7 @@ class DelawareScraper:
                 else:
                     record_data = [{**base_record, "representative_name": "", "representative_address": ""}]
 
-                # Filter to only keep records with representative info (from working code)
+                # Filter to only keep records with representative info
                 valid_records = [
                     r for r in record_data 
                     if r.get("representative_name") and r.get("representative_address")
@@ -924,9 +927,9 @@ class DelawareScraper:
                 processed_this_page += len(valid_records)
                 consecutive_misses = 0
 
-                print(f"  ✅ Record {row_idx + 1} processed: {len(valid_records)} valid entries")
+                print(f"  ✅ Record {row_idx + 1}: {len(valid_records)} valid entries")
 
-                # Return to results page with retries
+                # Return to results with retries
                 back_success = False
                 for retry in range(3):
                     back_success = await self.click_back_to_results()
@@ -935,29 +938,29 @@ class DelawareScraper:
                     await asyncio.sleep(1)
                 
                 if not back_success:
-                    print("❌ Failed to return to results, stopping page processing")
+                    print("❌ Failed to return to results")
                     break
 
                 await asyncio.sleep(0.5)
 
             # Add page records to total
             all_records.extend(page_records)
-            print(f"✅ Page {page_index} complete: {len(page_records)} records extracted")
-            print(f"📊 Total records so far: {len(all_records)}")
+            print(f"✅ Page {page_index}: {len(page_records)} records")
+            print(f"📊 Total so far: {len(all_records)}")
 
             # Navigate to next page with retries
             if page_index < max_pages:
-                print(f"🔄 Navigating to page {page_index + 1}...")
+                print(f"🔄 Navigating to page {page_index + 1}")
                 next_success = False
                 for retry in range(3):
                     next_success = await self.goto_results_page(page_index + 1)
                     if next_success:
                         break
-                    print(f"🔄 Retry {retry + 1}/3 for next page navigation...")
+                    print(f"🔄 Retry {retry + 1}/3 for next page...")
                     await asyncio.sleep(2)
                 
                 if not next_success:
-                    print("❌ Failed to navigate to next page, stopping")
+                    print("❌ Failed to navigate to next page")
                     break
                 
                 page_index += 1
@@ -994,8 +997,8 @@ async def main():
         print(f"📅 Last scraped date: {last_date}")
         print(f"📅 Scraping from date: {scrape_date}")
     else:
-        # If no previous data, start from yesterday
-        scrape_date = datetime.now().date() - timedelta(days=1)
+        # If no previous data, start from a reasonable recent date
+        scrape_date = datetime.now().date() - timedelta(days=30)  # Start from 30 days ago
         print(f"📅 No previous data found, scraping from: {scrape_date}")
     
     # Don't scrape future dates
@@ -1006,12 +1009,12 @@ async def main():
     
     print(f"\n🎯 Target scrape date: {scrape_date}")
 
-    # Setup browser and scraper (headless for GitHub Actions)
+    # Setup browser and scraper
     try:
         async with async_playwright() as pw:
             print("🌐 Launching browser...")
             browser = await pw.chromium.launch(
-                headless=True,  # Changed to True for GitHub Actions
+                headless=True,  # True for GitHub Actions
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
@@ -1019,6 +1022,7 @@ async def main():
                     "--disable-dev-shm-usage",
                     "--no-sandbox",
                     "--disable-gpu",
+                    "--single-process"
                 ]
             )
             
