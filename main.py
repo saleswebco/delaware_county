@@ -105,7 +105,7 @@ def append_to_google_sheets(svc, spreadsheet_id, records):
     """Append new records to appropriate monthly sheets in Google Sheets."""
     if not records:
         print("📭 No new records to append to Google Sheets")
-        return
+        return 0
 
     # Group records by month
     by_month = defaultdict(list)
@@ -204,14 +204,15 @@ def ensure_sheet_exists(svc, spreadsheet_id, sheet_name):
 
 class DelawareScraper:
     def __init__(self, page, browser=None, context=None,
-                 base_url: str = "https://delcorodonlineservices.co.delaware.pa.us/countyweb/loginDisplay.action?countyname=DelawarePAROD"):
+                 base_url: str = "https://delcorowonlineservices.co.delaware.pa.us/countyweb/loginDisplay.action?countyname=DelawarePA&errormsg=error.sessiontimeout"):
         self.page = page
         self.browser = browser
         self.context = context
         self.base_url = base_url
 
-    # Frame locator methods
+    # === FRAME LOCATOR METHODS (FROM WORKING CODE) ===
     def _res_list_loc(self):
+        # bodyframe -> resultFrame -> resultListFrame
         return (
             self.page
             .frame_locator("iframe[name='bodyframe']")
@@ -220,6 +221,7 @@ class DelawareScraper:
         )
 
     def _res_subnav_middle_loc(self):
+        # middle subnav with pageNumber input and Go button
         return (
             self.page
             .frame_locator("iframe[name='bodyframe']")
@@ -228,6 +230,7 @@ class DelawareScraper:
         )
 
     def _doc_loc(self):
+        # bodyframe -> documentFrame -> docInfoFrame
         return (
             self.page
             .frame_locator("iframe[name='bodyframe']")
@@ -277,7 +280,7 @@ class DelawareScraper:
             await asyncio.sleep(0.1)
         raise PlaywrightTimeoutError(f"Frame with name '{name}' not found within {timeout}ms")
 
-    # Navigation methods
+    # === NAVIGATION METHODS (FROM WORKING CODE) ===
     async def goto_login(self, retries: int = 3):
         """Go to login page and click 'Login as Guest'."""
         for attempt in range(1, retries + 1):
@@ -440,9 +443,9 @@ class DelawareScraper:
                     return False
                 await asyncio.sleep(2)
 
-    # Extraction methods
+    # === EXTRACTION METHODS (FROM WORKING CODE) ===
     async def extract_decedent_info_atomic(self):
-        """Extract decedent information."""
+        """Extract decedent information with robust ZIP handling."""
         loc = self._doc_loc()
         await self.ensure_decedent_tab()
 
@@ -467,32 +470,46 @@ class DelawareScraper:
         except:
             pass
 
-        # Extract address
+        # Extract address components
         addr = city = state = zipc = ""
 
+        # Street Address
         try:
             addr_cell = loc.locator("#fcaddrCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr/td[3]").first
             addr = (await addr_cell.text_content() or "").strip()
         except:
             pass
 
+        # City
         try:
             city_cell = loc.locator("#fccityCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr/td[3]").first
             city = (await city_cell.text_content() or "").strip()
         except:
             pass
 
+        # State + ZIP (nested table)
         try:
-            st_row = loc.locator("#fcstateCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr").first
-            st_cell = st_row.locator("td").nth(2).locator("table td").nth(0)
-            zp_cell = st_row.locator("td").nth(2).locator("table td").nth(2)
-            state = ((await st_cell.text_content()) or "").strip()
-            zipc  = ((await zp_cell.text_content()) or "").strip()
-        except:
-            pass
+            state_zip_cell = loc.locator("#fcstateCORESPONDENT_ADDRESSspan").locator("xpath=ancestor::tr/td[3]").first
+            state_locator = state_zip_cell.locator("table tr td").nth(0)
+            zip_locator = state_zip_cell.locator("table tr td").nth(2)
+            state = ((await state_locator.text_content()) or "").strip()
+            zipc = ((await zip_locator.text_content()) or "").strip()
+        except Exception as e:
+            print(f"⚠️ Could not extract state/zip (primary): {e}")
 
+        # Fallback ZIP extraction
+        if not zipc:
+            try:
+                zip_fallback = loc.locator("xpath=//span[@id='fczipCORESPONDENT_ADDRESSspan']/ancestor::td[1]/following-sibling::td[1]").first
+                zipc = ((await zip_fallback.text_content()) or "").strip()
+            except Exception as e:
+                print(f"📍 Fallback zip extraction failed: {e}")
+
+        # Final address assembly
         parts = [p for p in [addr, city, state, zipc] if p]
         decedent_address = ", ".join(parts) if parts else ""
+
+        print(f"🏠 Final address: '{decedent_address}'")
 
         return {
             "case_file_no": case_file_no,
@@ -771,8 +788,9 @@ class DelawareScraper:
             print(f"❌ Navigation failed: {e}")
             return False
 
+    # === MAIN SCRAPING METHOD (ADAPTED FROM WORKING CODE) ===
     async def scrape_single_day(self, scrape_date: datetime):
-        """Scrape records for a single day."""
+        """Scrape records for a single day using the robust logic from working code."""
         date_str = scrape_date.strftime("%m/%d/%Y")
         print(f"\n{'='*60}")
         print(f"📅 SCRAPING DATE: {date_str}")
@@ -791,13 +809,13 @@ class DelawareScraper:
         # Wait for results
         await asyncio.sleep(10)
 
-        max_pages = 10  # Reasonable limit for single day
+        max_pages = 20  # Increased limit for safety
         page_index = 1
         
         while page_index <= max_pages:
             print(f"\n📄 Processing page {page_index}")
 
-            # Wait for results list
+            # Wait for results list with retries (from working code)
             for retry in range(5):
                 try:
                     await self._res_list_loc().locator("a.link#inst0, a.link[onclick*='loadRecord']").first.wait_for(timeout=15000)
@@ -813,11 +831,11 @@ class DelawareScraper:
             consecutive_misses = 0
             page_records = []
 
-            # Process records on current page
+            # Process up to 40 records per page (from working code)
             for row_idx in range(40):
-                print(f"   📝 Processing record {row_idx + 1}")
+                print(f"   📝 Processing record {row_idx + 1} of 40 on page {page_index}")
 
-                # Click record link
+                # Click the record link with retries
                 success = False
                 for retry in range(3):
                     success = await self.click_result_link_by_index(row_idx)
@@ -829,11 +847,11 @@ class DelawareScraper:
                     print(f"   ❌ Could not click record {row_idx + 1}")
                     consecutive_misses += 1
                     if consecutive_misses >= 3:
-                        print("   ⏹️ End of page reached")
+                        print("   ⏹️ Several consecutive misses, assuming end of page")
                         break
                     continue
 
-                # Wait for document details
+                # Wait for document frame to load with retries
                 doc_loaded = False
                 for retry in range(3):
                     try:
@@ -843,14 +861,14 @@ class DelawareScraper:
                         break
                     except Exception as e:
                         if retry == 2:
-                            print(f"   ❌ Failed to load details")
+                            print(f"   ❌ Failed to load details for record {row_idx + 1}")
                         await asyncio.sleep(1)
 
                 if not doc_loaded:
                     consecutive_misses += 1
                     continue
 
-                # Extract data
+                # Extract decedent info
                 dec_info = {}
                 try:
                     dec_info = await self.extract_decedent_info_atomic()
@@ -858,6 +876,7 @@ class DelawareScraper:
                 except Exception as e:
                     print(f"   ❌ Decedent extraction failed: {e}")
 
+                # Extract representatives
                 reps = []
                 try:
                     clicked = await self.safe_click_tab("Representatives", retries=2)
@@ -868,7 +887,7 @@ class DelawareScraper:
                 except Exception as e:
                     print(f"   ❌ Representatives extraction failed: {e}")
 
-                # Get case metadata
+                # Get case metadata from URL
                 case_meta = {}
                 try:
                     for f in self.page.frames:
@@ -882,7 +901,7 @@ class DelawareScraper:
                 except Exception as e:
                     print(f"   ❌ Case metadata error: {e}")
 
-                # Combine record data
+                # Combine data (from working code)
                 base_record = {
                     "case_file_no": dec_info.get("case_file_no", ""),
                     "filing_date": dec_info.get("filing_date", ""),
@@ -895,7 +914,7 @@ class DelawareScraper:
                 else:
                     record_data = [{**base_record, "representative_name": "", "representative_address": ""}]
 
-                # Filter records with representative info
+                # Filter to only keep records with representative info (from working code)
                 valid_records = [
                     r for r in record_data 
                     if r.get("representative_name") and r.get("representative_address")
@@ -905,9 +924,9 @@ class DelawareScraper:
                 processed_this_page += len(valid_records)
                 consecutive_misses = 0
 
-                print(f"  ✅ Record {row_idx + 1}: {len(valid_records)} valid entries")
+                print(f"  ✅ Record {row_idx + 1} processed: {len(valid_records)} valid entries")
 
-                # Return to results
+                # Return to results page with retries
                 back_success = False
                 for retry in range(3):
                     back_success = await self.click_back_to_results()
@@ -916,29 +935,29 @@ class DelawareScraper:
                     await asyncio.sleep(1)
                 
                 if not back_success:
-                    print("❌ Failed to return to results")
+                    print("❌ Failed to return to results, stopping page processing")
                     break
 
                 await asyncio.sleep(0.5)
 
             # Add page records to total
             all_records.extend(page_records)
-            print(f"✅ Page {page_index}: {len(page_records)} records")
-            print(f"📊 Total so far: {len(all_records)}")
+            print(f"✅ Page {page_index} complete: {len(page_records)} records extracted")
+            print(f"📊 Total records so far: {len(all_records)}")
 
-            # Navigate to next page
+            # Navigate to next page with retries
             if page_index < max_pages:
-                print(f"🔄 Navigating to page {page_index + 1}")
+                print(f"🔄 Navigating to page {page_index + 1}...")
                 next_success = False
                 for retry in range(3):
                     next_success = await self.goto_results_page(page_index + 1)
                     if next_success:
                         break
-                    print(f"🔄 Retry {retry + 1}/3 for next page...")
+                    print(f"🔄 Retry {retry + 1}/3 for next page navigation...")
                     await asyncio.sleep(2)
                 
                 if not next_success:
-                    print("❌ Failed to navigate to next page")
+                    print("❌ Failed to navigate to next page, stopping")
                     break
                 
                 page_index += 1
@@ -987,12 +1006,12 @@ async def main():
     
     print(f"\n🎯 Target scrape date: {scrape_date}")
 
-    # Setup browser and scraper
+    # Setup browser and scraper (headless for GitHub Actions)
     try:
         async with async_playwright() as pw:
             print("🌐 Launching browser...")
             browser = await pw.chromium.launch(
-                headless=True,
+                headless=True,  # Changed to True for GitHub Actions
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
