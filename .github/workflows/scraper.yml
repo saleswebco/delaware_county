@@ -1,45 +1,47 @@
-name: Delaware Probate Daily Scraper
+name: Daily Delaware Probate Scraper
 
 on:
   schedule:
-    # Run daily at 6 AM UTC
+    # Run every day at 8:00 AM UTC (3:00 AM EST)
     - cron: '30 14 * * *'
   workflow_dispatch:  # Allow manual triggers
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-      
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
-        
+        python-version: '3.11'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install playwright beautifulsoup4 google-api-python-client google-auth-httplib2 google-auth-oauthlib
-        playwright install chromium
-        
-    - name: Run Delaware Probate Scraper
+        pip install -r requirements.txt
+        playwright install
+
+    - name: Run the scraper
       env:
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       run: |
-        python main.py
-        
+        python scrape_delaware_daily.py
+
     - name: Notify on failure
       if: failure()
       uses: actions/github-script@v6
       with:
         script: |
+          const { repo, owner } = context.repo;
           github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: '🚨 Delaware Scraper Failed',
-            body: 'The daily Delaware probate scraper has failed. Please check the workflow run for details.'
-          })
+            owner,
+            repo,
+            title: 'Daily Delaware Probate Scraper Failed',
+            body: 'The daily scrape failed. Please check the logs.',
+            labels: ['failure']
+          });
