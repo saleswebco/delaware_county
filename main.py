@@ -153,25 +153,37 @@ def append_to_google_sheets(svc, spreadsheet_id, records):
         # Ensure sheet exists
         ensure_sheet_exists(svc, spreadsheet_id, sheet_name)
         
-        # Prepare data for Google Sheets
+        # Prepare data for Google Sheets - CORRECTED COLUMN ORDER
         values = []
         for record in month_records:
+            # Convert date format from MM/DD/YYYY to YYYY-MM-DD
+            filing_date = record.get("filing_date", "")
+            formatted_date = filing_date
+            
+            # Try to parse and reformat the date
+            for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+                try:
+                    dt_obj = datetime.strptime(filing_date, fmt)
+                    formatted_date = dt_obj.strftime("%Y-%m-%d")
+                    print(f"  🔄 Converted date: {filing_date} -> {formatted_date}")
+                    break
+                except ValueError:
+                    continue
+            
             values.append([
                 record.get("case_file_no", ""),
-                record.get("filing_date", ""),
-                record.get("caseFileNum", ""),
-                record.get("caseFileId", ""),
+                formatted_date,  # Use the reformatted date
                 record.get("decedent_address", ""),
                 record.get("representative_name", ""),
                 record.get("representative_address", "")
             ])
 
         try:
-            # Append data to the sheet
+            # Append data to the sheet - CORRECTED RANGE (A:E instead of A:G)
             print(f"  ⬆️ Uploading {len(month_records)} records to sheet '{sheet_name}'...")
             result = svc.values().append(
                 spreadsheetId=spreadsheet_id,
-                range=f"'{sheet_name}'!A:G",
+                range=f"'{sheet_name}'!A:E",  # Changed from A:G to A:E
                 valueInputOption="USER_ENTERED",
                 body={"values": values}
             ).execute()
@@ -185,6 +197,7 @@ def append_to_google_sheets(svc, spreadsheet_id, records):
 
     print(f"🎯 Total records appended to Google Sheets: {total_appended} across {sheets_processed} sheets")
     return total_appended
+
 
 def ensure_sheet_exists(svc, spreadsheet_id, sheet_name):
     """Create a sheet if missing with proper headers."""
@@ -208,14 +221,14 @@ def ensure_sheet_exists(svc, spreadsheet_id, sheet_name):
             }
             svc.batchUpdate(spreadsheetId=spreadsheet_id, body=body).execute()
             
-            # Add headers
+            # Add headers - CORRECTED HEADERS (removed caseFileNum and caseFileId)
             headers = [
-                "Case File No", "Filing Date", "Case File Num", "Case File ID", 
-                "Decedent Address", "Representative Name", "Representative Address"
+                "Case File No", "Filing Date", "Decedent Address", 
+                "Representative Name", "Representative Address"
             ]
             svc.values().update(
                 spreadsheetId=spreadsheet_id,
-                range=f"'{sheet_name}'!A1:G1",
+                range=f"'{sheet_name}'!A1:E1",  # Changed from A1:G1 to A1:E1
                 valueInputOption="USER_ENTERED",
                 body={"values": [headers]}
             ).execute()
